@@ -1,9 +1,8 @@
+![Nod Gatekeeper](https://github.com/mraml/nod/actions/workflows/nod-gatekeeper.yml/badge.svg)
+
 # **nod: The AI Spec Compliance Gatekeeper**
 
 **nod** is a platform-agnostic, rule-based linter that ensures AI/LLM specifications contain critical security and compliance elements **before** any agentic or automated development begins.
-
-![Nod Gatekeeper](https://github.com/mraml/nod/actions/workflows/nod-gatekeeper.yml/badge.svg)
-
 
 ## **🚀 The Core Philosophy: "The Final Nod"**
 
@@ -18,13 +17,13 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 ## **✨ Key Features**
 
 * **Scaffolding (`--init`):** Instantly generate a compliant Markdown template based on active rules.  
+* **Auto-Fix (`--fix`):** Automatically append missing headers and compliance boilerplate to your spec.  
 * **Agent Context (`--export`):** Export compliance rules as a "System Prompt" to constrain AI agents during generation.  
-* **Policy-as-Code:** Define your compliance standards in simple YAML.  
-* **Gap Severity Model:** Categorizes issues as **CRITICAL**, **HIGH**, **MEDIUM**, or **LOW** to help security teams prioritize.  
+* **Integrity Signing:** Cryptographically sign audit artifacts using HMAC-SHA256 to prevent supply chain tampering.  
+* **Gap Severity Model:** Categorizes issues as **CRITICAL**, **HIGH**, **MEDIUM**, or **LOW**.  
 * **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards.  
 * **Exception Management:** Formalize risk acceptance using a `.nodignore` file.  
-* **Attestation Artifacts:** Generates a signed `nod-attestation.json` providing a tamper-proof audit trail.  
-* **Remote Rule Registry:** Point `nod` to a URL to always use the latest industry-standard rules.
+* **Remote Rule Registry:** Securely fetch industry-standard rules via HTTPS with strict SSL verification.
 
 ## **⚠️ Important Disclaimer**
 
@@ -34,7 +33,7 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 
 **nod** is a single-file Python tool. You can drop it directly into your repo or install it via your pipeline setup.
 
-**Requirements:** Python 3.8+, `PyYAML`
+**Requirements:** Python 3.10+, `PyYAML`
 
 ```
 pip install pyyaml
@@ -62,16 +61,6 @@ If you are using an AI Agent (like Ralph, Claude, or GPT) to write your spec or 
 python nod.py --export --rules rules.yaml
 ```
 
-*Output Example:*
-
-```
-SYSTEM COMPLIANCE CONSTRAINTS
-POLICY VERSION: 1.1.0
-...
-### FORBIDDEN (DO NOT GENERATE):
-- PATTERN 'real-time biometric identification': Prohibited (Art 5)...
-```
-
 ### **3\. Audit: The Gatekeeper**
 
 Run the scan to verify the work. Use `--strict` to ensure headers aren't just empty placeholders.
@@ -81,21 +70,23 @@ Run the scan to verify the work. Use `--strict` to ensure headers aren't just em
 python nod.py ai-spec.md --strict --min-severity HIGH
 ```
 
-### **4\. Fix: Self-Healing Workflow**
+### **4\. Maintain: Auto-Fix (`--fix`)**
 
-If the audit fails, `nod` generates `nod-attestation.json`. Pass this file to your agent. It contains a `remediation_summary` specifically formatted for LLMs to understand *exactly* what they missed and how to fix it using the provided template URLs.
-
-### **5\. Exceptions: Managing Waivers**
-
-If a rule doesn't apply (e.g., "Energy Consumption" on a trivial model), document it in `.nodignore`:
+Did you miss a new requirement? `nod` can append the missing sections for you.
 
 ```
-# .nodignore
-# Exception ID: ENV-001
-Energy Consumption
+python nod.py ai-spec.md --fix --rules rules.yaml
 ```
 
-These will appear as `[EXCEPTION]` in the report rather than `[FAIL]`.
+### **5\. Secure: Integrity Signing**
+
+To verify that an audit result hasn't been tampered with, set the `NOD_SECRET_KEY` environment variable. `nod` will include an HMAC signature in the output.
+
+```
+export NOD_SECRET_KEY="my-secret-ci-key"
+python nod.py ai-spec.md --output json
+# Output includes "signature": "a1b2c3..."
+```
 
 ## **⚙️ Configuration (`rules.yaml`)**
 
@@ -153,4 +144,5 @@ Add this to your `README.md` to show if your specs are currently passing the gat
 ## **🛡️ License**
 
 Apache 2.0
+
 
