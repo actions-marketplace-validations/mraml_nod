@@ -116,6 +116,46 @@ class Nod:
 
         return "\n".join(lines)
 
+    def generate_system_context(self) -> str:
+        """
+        Generates a System Prompt / Context block for AI Agents.
+        """
+        lines = ["# SYSTEM COMPLIANCE CONSTRAINTS"]
+        lines.append(f"POLICY VERSION: {self.policy_version}")
+        lines.append("The following constraints are MANDATORY for any specification or code generated in this session.\n")
+
+        profiles = self.config.get("profiles", {})
+        for profile_name, profile_data in profiles.items():
+            label = profile_data.get("badge_label", profile_name)
+            
+            # Filter Requirements
+            reqs = profile_data.get("requirements", [])
+            active_reqs = [r for r in reqs if r["id"] not in self.ignored_rules]
+            
+            # Filter Red Flags
+            flags = profile_data.get("red_flags", [])
+            active_flags = [f for f in flags if f["pattern"] not in self.ignored_rules]
+
+            if not active_reqs and not active_flags:
+                continue
+
+            lines.append(f"## PROFILE: {label}")
+            
+            if active_reqs:
+                lines.append("### MUST INCLUDE:")
+                for r in active_reqs:
+                    clean_id = re.sub(r"[#+*?^$\[\](){}|]", "", r["id"]).strip()
+                    lines.append(f"- {clean_id}: {r.get('remediation', '')}")
+
+            if active_flags:
+                lines.append("### FORBIDDEN (DO NOT GENERATE):")
+                for f in active_flags:
+                    lines.append(f"- PATTERN '{f['pattern']}': {f.get('remediation', '')}")
+            
+            lines.append("")
+
+        return "\n".join(lines)
+
     def scan_file(
         self, file_path: str, strict: bool = False
     ) -> Tuple[Dict[str, Any], str]:
@@ -393,6 +433,11 @@ def main() -> None:
         help="Generate a compliant spec template based on rules",
     )
     parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Export rules as a System Prompt context for AI agents",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Ensure fields are not empty",
@@ -412,6 +457,11 @@ def main() -> None:
     args = parser.parse_args()
 
     scanner = Nod(args.rules)
+
+    # MODE: Export (Agent Context)
+    if args.export:
+        print(scanner.generate_system_context())
+        sys.exit(0)
 
     # MODE: Init (Scaffolding)
     if args.init:
