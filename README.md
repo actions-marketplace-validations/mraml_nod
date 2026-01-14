@@ -1,4 +1,4 @@
-# **nod: AI Spec Compliance Gatekeeper**
+# **nod: The AI Spec Compliance Gatekeeper**
 
 **nod** is a platform-agnostic, rule-based linter that ensures AI/LLM specifications contain critical security and compliance elements **before** any agentic or automated development begins.
 
@@ -9,17 +9,18 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 **nod** ensures that the specification itself is legally and ethically sound before an agent ever touches it.
 
 * **Agnostic Integration:** Works as a pre-requisite for *any* agentic development tool or manual coding process.  
-* **Shift-Left Security:** Identifies missing risk assessments or oversight mechanisms at the design phase.  
+* **Shift-Left Security:** Identifies missing risk assessments, OWASP vulnerabilities, or oversight mechanisms at the design phase.  
 * **Deterministic Guardrails:** Replaces vague human "vibes" with a strict, rule-based audit trail.
 
 ## **✨ Key Features**
 
 * **Policy-as-Code:** Define your compliance standards in simple YAML.  
 * **Gap Severity Model:** Categorizes issues as **CRITICAL**, **HIGH**, **MEDIUM**, or **LOW** to help security teams prioritize.  
-* **Attestation Artifacts:** Generates a signed `nod-attestation.json` providing a tamper-proof audit trail of the design phase.  
-* **Remote Rule Registry:** Point `nod` to a URL to always use the latest industry-standard rules (e.g., specific to your organization).  
-* **Actionable Remediation:** Failures point directly to standardized templates to help developers fix gaps quickly.  
-* **Agent-Friendly Output:** Generates remediation summaries formatted specifically for downstream LLMs to understand and potentially fix.
+* **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards via `--output sarif`.  
+* **Exception Management:** Formalize risk acceptance using a `.nodignore` file to document approved deviations.  
+* **Attestation Artifacts:** Generates a signed `nod-attestation.json` providing a tamper-proof audit trail.  
+* **Remote Rule Registry:** Point `nod` to a URL to always use the latest industry-standard rules.  
+* **Agent-Friendly Remediation:** Failures provide specific "hints" that downstream AI agents can use to self-correct the spec.
 
 ## **⚠️ Important Disclaimer**
 
@@ -37,79 +38,68 @@ pip install pyyaml
 
 ## **📖 Usage**
 
-### **1\. Local Development (Check before you push)**
+### **1\. Basic & Strict Scans**
 
-You can run **nod** directly on your laptop to audit drafts.
+Run a local audit against a Markdown spec. Use `--strict` to ensure headers aren't just empty placeholders.
 
 ```
 # Basic Scan
 python nod.py specs/model-card.md --rules rules.yaml
 
 # Strict Mode (Recommended)
-# Ensures that required sections are not just present, but actually contain content.
 python nod.py specs/model-card.md --rules rules.yaml --strict
 ```
 
-### **2\. Local Git Hook (Automated Safety)**
+### **2\. Enforcing Severity Gates**
 
-Prevent yourself from pushing non-compliant specs by adding this to your `.git/hooks/pre-commit`:
-
-```
-#!/bin/sh
-# .git/hooks/pre-commit
-echo "Running nod compliance check..."
-python nod.py specs/model-card.md --rules rules.yaml --strict --min-severity HIGH
-```
-
-### **3\. Enforcing Severity Gates**
-
-You can control the "Gatekeeper" level. For example, block builds only on **HIGH** or **CRITICAL** issues, but allow **MEDIUM** gaps to pass with a warning:
+Control the "Gatekeeper" level. Block builds only on **HIGH** or **CRITICAL** issues, allowing **MEDIUM** gaps to pass with a warning.
 
 ```
 python nod.py specs/model-card.md --min-severity HIGH
 ```
 
-### **4\. Using Remote Rules (Plugin Architecture)**
+### **3\. Output Formats (JSON & SARIF)**
 
-Centralize your compliance logic by hosting the YAML file on a secure endpoint:
+Generate artifacts for audit trails or security dashboards.
 
 ```
-python nod.py specs/model-card.md --rules [https://security.my-org.com/ai-policy-v2.yaml](https://security.my-org.com/ai-policy-v2.yaml)
+# Generate a JSON attestation for downstream agents
+python nod.py specs/model-card.md --output json > nod-attestation.json
+
+# Generate SARIF for GitHub Security tab
+python nod.py specs/model-card.md --output sarif > results.sarif
 ```
 
-## **🤖 Downstream Agent Support**
+### **4\. Managing Exceptions (`.nodignore`)**
 
-**nod** generates a `nod-attestation.json` artifact. This file contains a `remediation_summary` field designed for Agentic AI.
+If a specific rule does not apply (e.g., "Energy Consumption" on a trivial model), document the exception formally in a `.nodignore` file in your root directory.
 
-**Example Scenario:**
+```
+# .nodignore
+# Format: Rule_ID
+Energy Consumption
+```
 
-1. **nod** fails a build because the "Human Oversight" section is missing.  
-2. The pipeline passes the `nod-attestation.json` to an agent (like Ralph).  
-3. The agent reads the summary: `"- [HIGH] Human Oversight: Describe how humans will monitor model decisions."`  
-4. The agent prompts the user or attempts to draft the missing section based on the linked template.
+These will appear as `[EXCEPTION]` in the audit report rather than `[FAIL]`.
 
 ## **⚙️ Configuration (`rules.yaml`)**
 
-You can define multiple "Profiles" (e.g., EU AI Act, NIST, Corporate Policy) in one file.
+**nod** comes with a comprehensive registry of profiles:
+
+1. **EU AI Act:** Articles 6, 10, 11, 12, 14, 15 (High-Risk classifications).  
+2. **NIST AI RMF:** Govern, Map, Measure, Manage functions.  
+3. **OWASP LLM Top 10:** Prompt Injection, Data Leakage, Model Theft.  
+4. **Security Baseline:** Encryption, Access Control, Secrets Management.
+
+You can point to a remote registry to keep rules up to date:
 
 ```
-profiles:
-  eu_ai_act:
-    badge_label: "EU AI Act Aligned"
-    requirements:
-      - id: "#+.*Risk Categorization"
-        severity: "CRITICAL"
-        remediation: "Define if the system is High-Risk under Annex III."
-        template_url: "[https://example.com/templates/eu-risk-mapping.md](https://example.com/templates/eu-risk-mapping.md)"
-    red_flags:
-      - pattern: "biometric identification"
-        severity: "CRITICAL"
-        remediation: "High-risk biometric usage detected. Requires Legal approval."
+python nod.py specs/model-card.md --rules [https://security.my-org.com/nod-rules-v1.yaml](https://security.my-org.com/nod-rules-v1.yaml)
 ```
 
 ## **🚦 CI/CD Integration (GitHub Actions)**
 
-Add this to `.github/workflows/nod-audit.yml` to guard your main branch:
+Add this to `.github/workflows/nod-audit.yml` to guard your main branch and see results in the Security tab:
 
 ```
 name: AI Compliance Gatekeeper
@@ -118,6 +108,8 @@ on: [pull_request]
 jobs:
   compliance-check:
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write # Required for SARIF upload
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -126,15 +118,18 @@ jobs:
           python-version: '3.10'
       - name: Install dependencies
         run: pip install pyyaml
-      - name: Run nod
+      - name: Run nod (Generate SARIF)
         run: |
-          # Fails the build if HIGH or CRITICAL gaps are found
-          python nod.py specs/ai-prd.md --rules rules.yaml --strict --min-severity HIGH
-      - name: Upload Attestation
-        uses: actions/upload-artifact@v4
+          # Don't fail immediately, let SARIF upload happen first
+          python nod.py specs/ai-prd.md --rules rules.yaml --output sarif > nod-results.sarif || true
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: nod-attestation
-          path: nod-attestation.json
+          sarif_file: nod-results.sarif
+      - name: Gatekeeper Check
+        run: |
+          # Now fail the build if criteria aren't met
+          python nod.py specs/ai-prd.md --rules rules.yaml --strict --min-severity HIGH
 ```
 
 ## **🛡️ License**
