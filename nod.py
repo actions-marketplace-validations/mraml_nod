@@ -149,6 +149,7 @@ class Nod:
         if not target_files: return {"error": f"No spec files found in {input_path}"}, "NONE"
 
         agg_content, total_size, file_hashes = "", 0, []
+        file_contents = {}
         base_dir = input_path if os.path.isdir(input_path) else os.path.dirname(input_path)
         is_single_json = len(target_files) == 1 and target_files[0].endswith(".json")
         default_source = target_files[0] if is_single_json else None
@@ -161,13 +162,14 @@ class Nod:
                 if total_size > self.MAX_TOTAL_SIZE: return {"error": "Total aggregation size exceeds memory limit"}, "NONE"
                 with open(fpath, "r", encoding="utf-8") as f:
                     raw = f.read()
+                    file_contents[fpath] = raw
                     file_hashes.append(hashlib.sha256(raw.encode()).hexdigest())
                     agg_content += raw if is_single_json else f"\n\n<!-- SOURCE: {fpath} -->\n{raw}"
             except Exception as e: print(f"Warning: {e}")
 
         agg_hash = hashlib.sha256("".join(sorted(file_hashes)).encode()).hexdigest()
         ext = ".json" if is_single_json else ".md"
-        results = self._audit_logic(agg_content, ext, strict, base_dir, default_source)
+        results = self._audit_logic(agg_content, ext, strict, base_dir, default_source, file_contents)
         
         max_sev, max_label = -1, "NONE"
         for p in results.values():
@@ -206,7 +208,56 @@ class Nod:
             })
         return checks
 
-    def _audit_logic(self, content: str, ext: str, strict: bool, base_dir: str, default_source: str = None) -> Dict[str, Any]:
+    def _check_req(self, content: str, ext: str, req: Dict, strict: bool) -> Tuple[bool, int, int, str]:
+        # Returns: passed, line, match_start, error_message
+        item_id = req["id"]
+        passed = False
+        line = 1
+        start_idx = -1
+        err = ""
+
+        if ext == ".json":
+            try:
+                data = json.loads(content)
+                if item_id in data:
+                    val = str(data[item_id])
+                    if not strict or val.strip():
+                        passed = True
+                        for p in req.get("must_match", []):
+                            if p.get("pattern") and not re.search(p["pattern"], val, re.IGNORECASE | re.MULTILINE):
+                                passed = False
+                                err = p.get('message', 'Value mismatch')
+            except: pass
+        else:
+            try:
+                m = re.search(item_id, content, re.IGNORECASE | re.MULTILINE)
+                if m:
+                    start_idx = m.start()
+                    line = self._get_line_number(content, start_idx)
+                    passed = True
+                    
+                    match_str, end = m.group(0).strip(), m.end()
+                    lvl = len(match_str) - len(match_str.lstrip('#')) if match_str.startswith('#') else 0
+                    section = content[end:]
+                    next_pat = r"^#{1," + str(lvl) + r"}\s" if lvl > 0 else r"^#+\s"
+                    next_m = re.search(next_pat, section, re.MULTILINE)
+                    if next_m: section = section[:next_m.start()]
+
+                    if strict and len(section.strip()) <= 15: passed = False
+                    
+                    if passed:
+                        missing = [sub for sub in req.get("must_contain", []) if not re.search(re.escape(sub), section, re.IGNORECASE)]
+                        if missing: passed, err = False, f"Missing: {', '.join(missing)}"
+                    
+                    if passed:
+                        for p in req.get("must_match", []):
+                            if p.get("pattern") and not re.search(p["pattern"], section, re.IGNORECASE | re.MULTILINE):
+                                passed, err = False, f"{p.get('message', 'Pattern mismatch')}"
+            except re.error: pass
+        
+        return passed, line, start_idx, err
+
+    def _audit_logic(self, content: str, ext: str, strict: bool, base_dir: str, default_source: str = None, file_map: Dict[str, str] = None) -> Dict[str, Any]:
         report = {}
         for profile, p_data in self.config.get("profiles", {}).items():
             checks, skipped = [], []
@@ -221,51 +272,35 @@ class Nod:
             for req in p_data.get("requirements", []):
                 item_id, status, passed, line, source = req["id"], "FAIL", False, 1, default_source
                 remediation = req.get("remediation", "")
+                mode = req.get("mode", "at_least_one")
                 
                 if item_id in skipped: status, passed = "SKIPPED", True
                 elif item_id in self.ignored_rules: status, passed = "EXCEPTION", True
-                elif ext == ".json":
-                    try:
-                        data = json.loads(content)
-                        if item_id in data:
-                            val = str(data[item_id])
-                            if not strict or val.strip():
-                                passed, status = True, "PASS"
-                                for p in req.get("must_match", []):
-                                    if p.get("pattern") and not re.search(p["pattern"], val, re.IGNORECASE | re.MULTILINE):
-                                        passed, status = False, "FAIL"
-                                        remediation = f"{p.get('message', 'Value mismatch')}. " + remediation
-                    except: pass
                 else:
-                    try:
-                        m = re.search(item_id, content, re.IGNORECASE | re.MULTILINE)
-                        if m:
-                            line, passed, status = self._get_line_number(content, m.start()), True, "PASS"
-                            if not source: source = self._resolve_source(content, m.start())
-                            
-                            # Section Extraction & Validation
-                            match_str, start = m.group(0).strip(), m.end()
-                            lvl = len(match_str) - len(match_str.lstrip('#')) if match_str.startswith('#') else 0
-                            section = content[start:]
-                            next_pat = r"^#{1," + str(lvl) + r"}\s" if lvl > 0 else r"^#+\s"
-                            next_m = re.search(next_pat, section, re.MULTILINE)
-                            if next_m: section = section[:next_m.start()]
-
-                            if strict and len(section.strip()) <= 15: passed, status = False, "FAIL"
-                            
-                            missing = [sub for sub in req.get("must_contain", []) if not re.search(re.escape(sub), section, re.IGNORECASE)]
-                            if missing:
-                                passed, status = False, "FAIL"
-                                remediation = f"Missing: {', '.join(missing)}. " + remediation
-                            
-                            for p in req.get("must_match", []):
-                                if p.get("pattern") and not re.search(p["pattern"], section, re.IGNORECASE | re.MULTILINE):
-                                    passed, status = False, "FAIL"
-                                    remediation = f"{p.get('message', 'Pattern mismatch')}. " + remediation
-                    except re.error: status = "FAIL"
+                    if mode == "in_all_files" and file_map:
+                        # Check strictly in EVERY file
+                        missing_files = []
+                        for fpath, fcontent in file_map.items():
+                            fext = os.path.splitext(fpath)[1].lower()
+                            p, _, _, _ = self._check_req(fcontent, fext, req, strict)
+                            if not p: missing_files.append(os.path.basename(fpath))
+                        
+                        if missing_files:
+                            status, passed = "FAIL", False
+                            remediation = f"Missing in {len(missing_files)} files: {', '.join(missing_files)}. " + remediation
+                        else:
+                            status, passed, source = "PASS", True, "all_files"
+                    else:
+                        # Default: Check aggregate (at least one)
+                        p, l, s_idx, err = self._check_req(content, ext, req, strict)
+                        if p:
+                            status, passed, line = "PASS", True, l
+                            if not source and s_idx >= 0: source = self._resolve_source(content, s_idx)
+                        if err: remediation = f"{err}. " + remediation
 
                 checks.append({
-                    "id": item_id, "passed": passed, "status": status, "severity": req.get("severity", "HIGH").upper(),
+                    "id": item_id, "passed": passed, "status": status, 
+                    "severity": req.get("severity", "HIGH").upper(),
                     "remediation": remediation, "tags": req.get("tags", []), "article": req.get("article"),
                     "control_id": req.get("control_id"), "source": source, "line": line
                 })
