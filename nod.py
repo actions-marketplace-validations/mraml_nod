@@ -140,6 +140,10 @@ class Nod:
             for req in profile_data.get("requirements", []):
                 lines.append(f"### {self._clean_header(req['id'])}")
                 lines.append(f"<!-- {req.get('remediation', 'Fill in this section.')} -->")
+                if req.get("must_contain"):
+                    lines.append("<!-- Required subsections: -->")
+                    for item in req["must_contain"]:
+                        lines.append(f"{item}")
                 lines.append("TODO: Add details here...\n")
         return "\n".join(lines)
 
@@ -152,7 +156,12 @@ class Nod:
             lines.append(f"## PROFILE: {profile_data.get('badge_label', profile_name)}")
             if reqs:
                 lines.append("### MUST INCLUDE:")
-                for r in reqs: lines.append(f"- {self._clean_header(r['id'])}: {r.get('remediation', '')}")
+                for r in reqs:
+                    clean_id = self._clean_header(r['id'])
+                    detail = r.get('remediation', '')
+                    if r.get("must_contain"):
+                        detail += f" (Must also contain: {', '.join(r['must_contain'])})"
+                    lines.append(f"- {clean_id}: {detail}")
             if flags:
                 lines.append("### FORBIDDEN:")
                 for f in flags: lines.append(f"- PATTERN '{f['pattern']}': {f.get('remediation', '')}")
@@ -273,6 +282,7 @@ class Nod:
                 item_id = req["id"]
                 status = "FAIL"; passed = False; line = 1
                 source = default_source
+                remediation = req.get("remediation", "")
                 
                 if item_id in skipped: status = "SKIPPED"; passed = True
                 elif item_id in self.ignored_rules: status = "EXCEPTION"; passed = True
@@ -291,17 +301,40 @@ class Nod:
                                 if not source:
                                     source = self._resolve_source(content, m.start())
                                 
-                                if strict and len(content[m.end():].split("#")[0].strip()) <= 15: passed = False; status = "FAIL"
+                                # Enhanced Section Extraction
+                                match_str = m.group(0).strip()
+                                level = len(match_str) - len(match_str.lstrip('#')) if match_str.startswith('#') else 0
+                                start = m.end()
+                                
+                                # Find end of current section (next header of same or higher level)
+                                section = content[start:]
+                                if level > 0:
+                                    next_head = re.search(r"^#{1," + str(level) + r"}\s", content[start:], re.MULTILINE)
+                                    if next_head: section = content[start:start + next_head.start()]
+                                else:
+                                    # Fallback if no header level derived
+                                    next_head = re.search(r"^#+\s", content[start:], re.MULTILINE)
+                                    if next_head: section = content[start:start + next_head.start()]
+
+                                if strict and len(section.strip()) <= 15: 
+                                    passed = False; status = "FAIL"
+                                
+                                # Template Structure Validation
+                                missing = [sub for sub in req.get("must_contain", []) if not re.search(re.escape(sub), section, re.IGNORECASE)]
+                                if missing:
+                                    passed = False; status = "FAIL"
+                                    remediation = f"Missing subsections: {', '.join(missing)}. " + remediation
+
                         except re.error: status = "FAIL"
 
                 checks.append({
                     "id": item_id, "passed": passed, "status": status, 
                     "severity": req.get("severity", "HIGH").upper(),
-                    "remediation": req.get("remediation"),
+                    "remediation": remediation,
                     "tags": req.get("tags", []),
                     "article": req.get("article"),
                     "control_id": req.get("control_id"),
-                    "source": source, # NEW: Track which file satisfied the req
+                    "source": source,
                     "line": line
                 })
 
