@@ -370,6 +370,41 @@ class Nod:
             print(f"✅ patched {target_file}: Appended {count} missing sections.")
         except Exception as e: print(f"Error patching: {e}")
 
+    def generate_compliance_report(self) -> str:
+        lines = []
+        for profile, p_data in self.attestation["results"].items():
+            checks = p_data.get("checks", [])
+            total = len(checks)
+            compliant_count = len([c for c in checks if c["status"] != "FAIL"])
+            percentage = int((compliant_count / total * 100) if total > 0 else 0)
+            
+            lines.append(f"{p_data['label']} Compliance Report")
+            lines.append(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d')}")
+            lines.append(f"Status: {percentage}% Compliant ({compliant_count}/{total} requirements)\n")
+            
+            for c in checks:
+                status_icon = "✅"
+                if c["status"] == "FAIL": status_icon = "❌"
+                elif c["status"] == "EXCEPTION": status_icon = "⚪"
+                elif c["status"] == "SKIPPED": status_icon = "⏭️"
+                
+                ref = c.get("article") or c.get("control_id")
+                clean_id = self._clean_header(c['id'])
+                title = f"{ref}: {clean_id}" if ref else clean_id
+                
+                lines.append(f"{status_icon} {title}")
+                if c["status"] == "FAIL":
+                    lines.append(f"   Status: MISSING")
+                    if c.get("remediation"): lines.append(f"   Remediation: {c['remediation']}")
+                elif c["status"] == "PASS":
+                    source = c.get("source")
+                    if source and source != "unknown": lines.append(f"   Evidence: {source}:{c.get('line')}")
+                elif c["status"] == "EXCEPTION": lines.append(f"   Status: EXCEPTION")
+                elif c["status"] == "SKIPPED": lines.append(f"   Status: SKIPPED")
+                lines.append("")
+            lines.append("-" * 40 + "\n")
+        return "\n".join(lines)
+
     def generate_sarif(self, input_path: str) -> Dict[str, Any]:
         rules = []; results = []; rule_map = {}
         # Use specific file if known, else input_path (dir)
@@ -403,7 +438,7 @@ def main() -> None:
     parser.add_argument("--export", action="store_true", help="Export context")
     parser.add_argument("--strict", action="store_true", help="Ensure fields are not empty")
     parser.add_argument("--min-severity", default="HIGH", choices=["MEDIUM", "HIGH", "CRITICAL"])
-    parser.add_argument("--output", choices=["text", "json", "sarif"], default="text")
+    parser.add_argument("--output", choices=["text", "json", "sarif", "compliance"], default="text")
     args = parser.parse_args()
 
     default_rules = ["rules.yaml"]
@@ -433,6 +468,9 @@ def main() -> None:
 
     if args.output == "sarif": print(json.dumps(scanner.generate_sarif(args.path), indent=2))
     elif args.output == "json": print(json.dumps(scanner.attestation, indent=2))
+    elif args.output == "compliance":
+        print(scanner.generate_compliance_report())
+        sys.exit(0 if scanner.SEVERITY_MAP.get(max_sev, 0) < scanner.SEVERITY_MAP.get(args.min_severity) else 1)
     else:
         print(f"\n--- nod Audit Summary ---")
         print(f"Target: {args.path}")
