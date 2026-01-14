@@ -174,6 +174,12 @@ jobs:
           python nod.py ai-spec.md --rules rules.yaml --strict --min-severity HIGH
 ```
 
+## **🤝 Contributing**
+
+We welcome contributions\! Please see [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for details on how to add new rules or features.
+
+If you find **nod** useful for your organization, please consider **starring the repository** to help others find it.
+
 ## **🏷️ Badges & Live Status**
 
 Add this to your `README.md` to show if your specs are currently passing the gate.
@@ -189,6 +195,7 @@ Add this to your `README.md` to show if your specs are currently passing the gat
 ## **🛡️ License**
 
 Apache 2.0
+
 
 
 
