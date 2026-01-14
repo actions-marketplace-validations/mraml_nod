@@ -2,6 +2,8 @@
 # Style Guide: YAML 1.2, 2-space indentation.
 # All regex patterns and string values should be double-quoted.
 
+version: "1.0.0"
+
 profiles:
   # ---------------------------------------------------------------------------
   # EU AI ACT (Regulation 2024/1689)
@@ -9,6 +11,17 @@ profiles:
   # ---------------------------------------------------------------------------
   eu_ai_act:
     badge_label: "EU AI Act Aligned"
+    
+    # Condition: If spec says "Risk Category: Low", skip strict Article 14/15 requirements
+    conditions:
+      - if:
+          regex_match: "Risk Categorization.*(Low|Minimal|No Risk)"
+        then:
+          skip: 
+            - "Human Oversight Measures"
+            - "Robustness Measures"
+            - "Cybersecurity Measures"
+
     requirements:
       # --- Article 6 & Annex III: Classification ---
       - id: "#+.*Risk Categorization"
