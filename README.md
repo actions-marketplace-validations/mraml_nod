@@ -2,8 +2,6 @@
 
 **nod** is a platform-agnostic, rule-based linter that ensures AI/LLM specifications contain critical security and compliance elements **before** any agentic or automated development begins.
 
-![Nod Gatekeeper](https://github.com/mraml/nod/actions/workflows/nod-gatekeeper.yml/badge.svg)
-
 ## **🚀 The Core Philosophy: "The Final Nod"**
 
 Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD builders) are powerful but "compliance-blind." They build exactly what is in the specification.
@@ -16,13 +14,14 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 
 ## **✨ Key Features**
 
+* **Scaffolding (`--init`):** Instantly generate a compliant Markdown template based on active rules.  
+* **Agent Context (`--export`):** Export compliance rules as a "System Prompt" to constrain AI agents during generation.  
 * **Policy-as-Code:** Define your compliance standards in simple YAML.  
 * **Gap Severity Model:** Categorizes issues as **CRITICAL**, **HIGH**, **MEDIUM**, or **LOW** to help security teams prioritize.  
-* **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards via `--output sarif`.  
-* **Exception Management:** Formalize risk acceptance using a `.nodignore` file to document approved deviations.  
+* **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards.  
+* **Exception Management:** Formalize risk acceptance using a `.nodignore` file.  
 * **Attestation Artifacts:** Generates a signed `nod-attestation.json` providing a tamper-proof audit trail.  
-* **Remote Rule Registry:** Point `nod` to a URL to always use the latest industry-standard rules.  
-* **Agent-Friendly Remediation:** Failures provide specific "hints" that downstream AI agents can use to self-correct the spec.
+* **Remote Rule Registry:** Point `nod` to a URL to always use the latest industry-standard rules.
 
 ## **⚠️ Important Disclaimer**
 
@@ -38,51 +37,62 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 pip install pyyaml
 ```
 
-## **📖 Usage**
+## **📖 Usage Lifecycle**
 
-### **1\. Basic & Strict Scans**
+**nod** is designed to support the entire specification lifecycle, from blank page to final audit.
 
-Run a local audit against a Markdown spec. Use `--strict` to ensure headers aren't just empty placeholders.
+### **1\. Start: The Blank Page Problem (`--init`)**
 
-```
-# Basic Scan
-python nod.py specs/model-card.md --rules rules.yaml
-
-# Strict Mode (Recommended)
-python nod.py specs/model-card.md --rules rules.yaml --strict
-```
-
-### **2\. Enforcing Severity Gates**
-
-Control the "Gatekeeper" level. Block builds only on **HIGH** or **CRITICAL** issues, allowing **MEDIUM** gaps to pass with a warning.
+Don't know what headers strict compliance requires? Let `nod` build the skeleton for you.
 
 ```
-python nod.py specs/model-card.md --min-severity HIGH
+# Generate a spec with all headers for EU AI Act, NIST, and OWASP
+python nod.py ai-spec.md --init --rules rules.yaml
 ```
 
-### **3\. Output Formats (JSON & SARIF)**
+### **2\. Build: Agentic Context Injection (`--export`)**
 
-Generate artifacts for audit trails or security dashboards.
+If you are using an AI Agent (like Ralph, Claude, or GPT) to write your spec or code, feed it the rules first.
 
 ```
-# Generate a JSON attestation for downstream agents
-python nod.py specs/model-card.md --output json > nod-attestation.json
-
-# Generate SARIF for GitHub Security tab
-python nod.py specs/model-card.md --output sarif > results.sarif
+# Export rules as a System Prompt constraint block
+python nod.py --export --rules rules.yaml
 ```
 
-### **4\. Managing Exceptions (`.nodignore`)**
+*Output Example:*
 
-If a specific rule does not apply (e.g., "Energy Consumption" on a trivial model), document the exception formally in a `.nodignore` file in your root directory.
+```
+SYSTEM COMPLIANCE CONSTRAINTS
+POLICY VERSION: 1.1.0
+...
+### FORBIDDEN (DO NOT GENERATE):
+- PATTERN 'real-time biometric identification': Prohibited (Art 5)...
+```
+
+### **3\. Audit: The Gatekeeper**
+
+Run the scan to verify the work. Use `--strict` to ensure headers aren't just empty placeholders.
+
+```
+# Local Scan
+python nod.py ai-spec.md --strict --min-severity HIGH
+```
+
+### **4\. Fix: Self-Healing Workflow**
+
+If the audit fails, `nod` generates `nod-attestation.json`. Pass this file to your agent. It contains a `remediation_summary` specifically formatted for LLMs to understand *exactly* what they missed and how to fix it using the provided template URLs.
+
+### **5\. Exceptions: Managing Waivers**
+
+If a rule doesn't apply (e.g., "Energy Consumption" on a trivial model), document it in `.nodignore`:
 
 ```
 # .nodignore
-# Format: Rule_ID
+# Exception ID: ENV-001
 Energy Consumption
 ```
 
-These will appear as `[EXCEPTION]` in the audit report rather than `[FAIL]`.
+These will appear as `[EXCEPTION]` in the report rather than `[FAIL]`.
 
 ## **⚙️ Configuration (`rules.yaml`)**
 
@@ -93,15 +103,9 @@ These will appear as `[EXCEPTION]` in the audit report rather than `[FAIL]`.
 3. **OWASP LLM Top 10:** Prompt Injection, Data Leakage, Model Theft.  
 4. **Security Baseline:** Encryption, Access Control, Secrets Management.
 
-You can point to a remote registry to keep rules up to date:
-
-```
-python nod.py specs/model-card.md --rules [https://security.my-org.com/nod-rules-v1.yaml](https://security.my-org.com/nod-rules-v1.yaml)
-```
-
 ## **🚦 CI/CD Integration (GitHub Actions)**
 
-Add this to `.github/workflows/nod-audit.yml` to guard your main branch and see results in the Security tab:
+Add this to `.github/workflows/nod-gatekeeper.yml` to guard your main branch and see results in the GitHub Security tab:
 
 ```
 name: AI Compliance Gatekeeper
@@ -112,6 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write # Required for SARIF upload
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -123,7 +128,7 @@ jobs:
       - name: Run nod (Generate SARIF)
         run: |
           # Don't fail immediately, let SARIF upload happen first
-          python nod.py specs/ai-prd.md --rules rules.yaml --output sarif > nod-results.sarif || true
+          python nod.py ai-spec.md --rules rules.yaml --output sarif > nod-results.sarif || true
       - name: Upload SARIF to GitHub Security Tab
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -131,20 +136,16 @@ jobs:
       - name: Gatekeeper Check
         run: |
           # Now fail the build if criteria aren't met
-          python nod.py specs/ai-prd.md --rules rules.yaml --strict --min-severity HIGH
+          python nod.py ai-spec.md --rules rules.yaml --strict --min-severity HIGH
 ```
 
 ## **🏷️ Badges & Live Status**
 
-While **nod** provides static badges for policy alignment (like the ones at the top of this file), most teams prefer a **Live Status Badge** that updates automatically with every commit.
-
-Add this to your `README.md` to show if your specs are currently passing the gate:
+Add this to your `README.md` to show if your specs are currently passing the gate.
 
 ```
-![Nod Gatekeeper](https://github.com/<username>/<repo>/actions/workflows/nod-audit.yml/badge.svg)
+![Nod Gatekeeper](https://github.com/<username>/<repo>/actions/workflows/nod-gatekeeper.yml/badge.svg)
 ```
-
-*Note: Replace `<username>`, `<repo>`, and `nod-audit.yml` with your actual repository details and workflow filename. This badge will turn Green ✅ or Red ❌ dynamically based on the build status.*
 
 ## **🛡️ License**
 
