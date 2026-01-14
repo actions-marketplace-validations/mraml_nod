@@ -12,7 +12,7 @@ We implement a "Human-in-the-loop" strategy. All loan denials are routed to a lo
 
 ### **Technical Documentation**
 
-Full technical documentation (Annex IV) is stored in the `/docs/tech` folder and referenced in the SBOM.
+Full technical documentation (Annex IV) is stored in the `/docs/tech` directory and referenced in the SBOM.
 
 ### **Data Governance**
 
