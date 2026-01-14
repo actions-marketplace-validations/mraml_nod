@@ -182,6 +182,10 @@ Add this to your `README.md` to show if your specs are currently passing the gat
 ![Nod Gatekeeper](https://github.com/<username>/<repo>/actions/workflows/nod-gatekeeper.yml/badge.svg)
 ```
 
+## **🤖 Transparency**
+
+**nod** was developed with the assistance of AI tools. While the core logic is deterministic and rule-based, the codebase and documentation were accelerated using Large Language Models.
+
 ## **🛡️ License**
 
 Apache 2.0
