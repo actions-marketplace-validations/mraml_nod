@@ -5,62 +5,44 @@ A platform-agnostic, rule-based linter that ensures AI/LLM specifications
 contain critical security and compliance elements before automated development.
 """
 
-import argparse
-import hashlib
-import hmac
-import json
-import os
-import re
-import ssl
-import sys
-import urllib.request
+import argparse, hashlib, hmac, json, os, re, ssl, sys, urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
-
 import yaml
 
-
 class Nod:
-    """
-    The agnostic gatekeeper for AI Spec Compliance.
-    Designed to be a 'Policy-as-Code' layer.
-    """
-
-    SEVERITY_MAP: Dict[str, int] = {
-        "CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0
-    }
-
-    SARIF_LEVEL_MAP: Dict[str, str] = {
-        "CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning",
-        "LOW": "note", "INFO": "note"
-    }
-
-    # Maps nod severity to CVSS-style scores (0.0-10.0) for GitHub Code Scanning
-    SARIF_SCORE_MAP: Dict[str, str] = {
+    SEVERITY_MAP = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+    
+    # Mapping for GitHub Code Scanning (0.0-10.0)
+    SARIF_SCORE_MAP = {
         "CRITICAL": "9.0", "HIGH": "7.0", "MEDIUM": "5.0",
         "LOW": "3.0", "INFO": "1.0"
     }
-
+    
+    SARIF_LEVEL_MAP = {
+        "CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning",
+        "LOW": "note", "INFO": "note"
+    }
+    
     DEFAULT_TIMEOUT = 15.0
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
-    MAX_TOTAL_SIZE = 20 * 1024 * 1024  # 20MB
+    MAX_TOTAL_SIZE = 20 * 1024 * 1024 # 20MB
 
     def __init__(self, rules_sources: List[str], ignore_path: str = ".nodignore") -> None:
-        self.rules_sources = rules_sources
-        self.config = self._load_and_merge_rules(rules_sources)
+        self.config = self._load_rules(rules_sources)
         self.policy_version = self.config.get("version", "unknown")
-        self.ignored_rules = self._load_ignore_file(ignore_path)
+        self.ignored = self._load_ignore(ignore_path)
         self.attestation: Dict[str, Any] = {}
 
-    def _load_and_merge_rules(self, sources: List[str]) -> Dict[str, Any]:
+    def _load_rules(self, sources: List[str]) -> Dict[str, Any]:
         merged = {"profiles": {}, "version": "combined"}
         ctx = ssl.create_default_context()
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
 
-        def merge(new_data):
-            if not new_data: return
-            for k, v in new_data.get("profiles", {}).items():
+        def merge(new):
+            if not new: return
+            for k, v in new.get("profiles", {}).items():
                 if k not in merged["profiles"]: merged["profiles"][k] = v
                 else: merged["profiles"][k].update(v)
 
@@ -71,425 +53,333 @@ class Nod:
                         merge(yaml.safe_load(r.read()))
                 elif os.path.isdir(src):
                     for f in sorted(os.listdir(src)):
-                        if f.lower().endswith(('.yaml', '.yml')):
+                        if f.endswith(('.yaml', '.yml')):
                             fp = os.path.join(src, f)
-                            if os.path.getsize(fp) <= self.MAX_FILE_SIZE:
-                                with open(fp, "r", encoding="utf-8") as f_in: merge(yaml.safe_load(f_in))
+                            if os.path.getsize(fp) > self.MAX_FILE_SIZE:
+                                print(f"Warning: Skipping rule {fp} (Size limit)", file=sys.stderr)
+                                continue
+                            with open(fp, "r", encoding="utf-8") as f_in: merge(yaml.safe_load(f_in))
                 elif os.path.exists(src):
-                    if os.path.getsize(src) <= self.MAX_FILE_SIZE:
-                        with open(src, "r", encoding="utf-8") as f: merge(yaml.safe_load(f))
-                    else: print(f"Error: {src} exceeds size limit.")
-            except Exception as e:
-                print(f"Error loading rules from {src}: {str(e)}"); sys.exit(1)
+                    if os.path.getsize(src) > self.MAX_FILE_SIZE:
+                        print(f"Error: Rule file {src} too large", file=sys.stderr); sys.exit(1)
+                    with open(src, "r", encoding="utf-8") as f: merge(yaml.safe_load(f))
+            except Exception as e: print(f"Error loading rules {src}: {e}", file=sys.stderr); sys.exit(1)
         return merged
 
-    def _load_ignore_file(self, path: str) -> List[str]:
+    def _load_ignore(self, path: str) -> List[str]:
         if os.path.exists(path):
             try:
                 if os.path.getsize(path) <= 1024 * 1024:
                     with open(path, "r", encoding="utf-8") as f:
-                        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
-            except Exception: pass
+                        return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            except: pass
         return []
 
-    def _get_line_number(self, content: str, index: int) -> int:
-        return content.count("\n", 0, index) + 1
+    def _clean(self, text: str) -> str:
+        return " ".join(re.sub(r"[#+*?^$\[\](){}|]", "", text).replace(".*", " ").replace(".", " ").split())
 
-    def _clean_header(self, text: str) -> str:
-        text = re.sub(r"[#+*?^$\[\](){}|]", "", text).strip()
-        return " ".join(text.replace(".*", " ").replace(".", " ").split())
-
-    def _resolve_source(self, content: str, index: int, default_source: str = None) -> str:
-        if default_source: return default_source
-        markers = list(re.finditer(r"<!-- SOURCE: (.*?) -->", content))
+    def _resolve_source(self, content: str, index: int) -> str:
         best = "unknown"
-        for m in markers:
+        for m in re.finditer(r"<!-- SOURCE: (.*?) -->", content):
             if m.start() < index: best = m.group(1)
             else: break
         return best
 
-    def generate_template(self) -> str:
-        lines = ["# AI Project Specification (Generated by nod)", "", f"> Policy Version: {self.policy_version}", "> Auto-generated based on compliance requirements.\n"]
+    def gen_template(self) -> str:
+        lines = ["# AI Project Spec (Generated by nod)", "", f"> Policy: {self.policy_version}\n"]
         for name, data in self.config.get("profiles", {}).items():
-            lines.append(f"---\n## Compliance Profile: {data.get('badge_label', name)}\n")
+            lines.append(f"---\n## Profile: {data.get('badge_label', name)}\n")
             for req in data.get("requirements", []):
-                lines.append(f"### {self._clean_header(req['id'])}")
-                lines.append(f"<!-- {req.get('remediation', 'Fill in this section.')} -->")
-                if req.get("must_contain"):
-                    lines.append("<!-- Required subsections: -->")
-                    for item in req["must_contain"]: lines.append(f"{item}")
-                lines.append("TODO: Add details here...\n")
+                lines += [f"### {self._clean(req['id'])}", f"<!-- {req.get('remediation', 'Fill section')} -->"]
+                if req.get("must_contain"): lines += ["<!-- Subsections: -->"] + req["must_contain"]
+                lines.append("TODO: Add details...\n")
         return "\n".join(lines)
 
-    def generate_system_context(self) -> str:
-        lines = ["# SYSTEM COMPLIANCE CONSTRAINTS", f"POLICY VERSION: {self.policy_version}", "The following constraints are MANDATORY.\n"]
+    def gen_context(self) -> str:
+        lines = ["# SYSTEM COMPLIANCE CONSTRAINTS", f"POLICY: {self.policy_version}", "MANDATORY CONSTRAINTS:\n"]
         for name, data in self.config.get("profiles", {}).items():
-            reqs = [r for r in data.get("requirements", []) if r["id"] not in self.ignored_rules]
-            flags = [f for f in data.get("red_flags", []) if f["pattern"] not in self.ignored_rules]
+            reqs = [r for r in data.get("requirements", []) if r["id"] not in self.ignored]
+            flags = [f for f in data.get("red_flags", []) if f["pattern"] not in self.ignored]
             if not reqs and not flags: continue
-            lines.append(f"## PROFILE: {data.get('badge_label', name)}")
-            if reqs:
-                lines.append("### MUST INCLUDE:")
-                for r in reqs:
-                    det = r.get('remediation', '')
-                    if r.get("must_contain"): det += f" (Must also contain: {', '.join(r['must_contain'])})"
-                    lines.append(f"- {self._clean_header(r['id'])}: {det}")
-            if flags:
-                lines.append("### FORBIDDEN:")
-                for f in flags: lines.append(f"- PATTERN '{f['pattern']}': {f.get('remediation', '')}")
+            lines.append(f"## {data.get('badge_label', name)}")
+            if reqs: lines += ["### REQUIRE:"] + [f"- {self._clean(r['id'])}: {r.get('remediation','')}" for r in reqs]
+            if flags: lines += ["### FORBID:"] + [f"- PATTERN '{f['pattern']}': {f.get('remediation','')}" for f in flags]
             lines.append("")
         return "\n".join(lines)
 
-    def _collect_files(self, path: str) -> List[str]:
-        if os.path.isfile(path): return [path]
-        found = []
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for f in files:
-                if os.path.splitext(f)[1].lower() in {'.md', '.markdown', '.json', '.txt'}:
-                    found.append(os.path.join(root, f))
-        return found
-
-    def scan_input(self, input_path: str, strict: bool = False) -> Tuple[Dict[str, Any], str]:
-        target_files = self._collect_files(input_path)
-        if not target_files: return {"error": f"No spec files found in {input_path}"}, "NONE"
-
-        agg_content, total_size, file_hashes = "", 0, []
-        file_contents = {}
-        base_dir = input_path if os.path.isdir(input_path) else os.path.dirname(input_path)
-        is_single_json = len(target_files) == 1 and target_files[0].endswith(".json")
-        default_source = target_files[0] if is_single_json else None
-
-        for fpath in target_files:
-            try:
-                size = os.path.getsize(fpath)
-                if size > self.MAX_FILE_SIZE: continue
-                total_size += size
-                if total_size > self.MAX_TOTAL_SIZE: return {"error": "Total aggregation size exceeds memory limit"}, "NONE"
-                with open(fpath, "r", encoding="utf-8") as f:
-                    raw = f.read()
-                    file_contents[fpath] = raw
-                    file_hashes.append(hashlib.sha256(raw.encode()).hexdigest())
-                    agg_content += raw if is_single_json else f"\n\n<!-- SOURCE: {fpath} -->\n{raw}"
-            except Exception as e: print(f"Warning: {e}")
-
-        agg_hash = hashlib.sha256("".join(sorted(file_hashes)).encode()).hexdigest()
-        ext = ".json" if is_single_json else ".md"
-        results = self._audit_logic(agg_content, ext, strict, base_dir, default_source, file_contents)
+    def scan_input(self, path: str, strict: bool = False) -> Tuple[Dict, str]:
+        files = []
+        if os.path.isfile(path): files = [path]
+        else:
+            for root, dirs, fs in os.walk(path):
+                dirs[:] = [d for d in dirs if not d.startswith('.')] # Filter hidden dirs
+                files += [os.path.join(root, f) for f in fs if os.path.splitext(f)[1].lower() in {'.md', '.json', '.txt'}]
         
-        max_sev, max_label = -1, "NONE"
+        if not files: return {"error": f"No files in {path}"}, "NONE"
+        
+        agg, total_sz, hashes, file_map = "", 0, [], {}
+        base = path if os.path.isdir(path) else os.path.dirname(path)
+        is_single_json = len(files) == 1 and files[0].endswith(".json")
+
+        for fp in files:
+            try:
+                sz = os.path.getsize(fp)
+                if sz > self.MAX_FILE_SIZE: continue
+                if (total_sz := total_sz + sz) > self.MAX_TOTAL_SIZE: return {"error": "Total size limit exceeded"}, "NONE"
+                with open(fp, "r", encoding="utf-8") as f:
+                    raw = f.read()
+                    file_map[fp] = raw
+                    hashes.append(hashlib.sha256(raw.encode()).hexdigest())
+                    agg += raw if is_single_json else f"\n\n<!-- SOURCE: {fp} -->\n{raw}"
+            except Exception as e: print(f"Warn: {e}")
+
+        agg_hash = hashlib.sha256("".join(sorted(hashes)).encode()).hexdigest()
+        results = self._audit(agg, ".json" if is_single_json else ".md", strict, base, files[0] if is_single_json else None, file_map)
+        
+        max_sev, max_lab = -1, "NONE"
         for p in results.values():
             for c in p.get("checks", []):
                 if not c["passed"] and c["status"] == "FAIL":
-                    val = self.SEVERITY_MAP.get(c["severity"], 0)
-                    if val > max_sev: max_sev, max_label = val, c["severity"]
+                    if (v := self.SEVERITY_MAP.get(c["severity"], 0)) > max_sev: max_sev, max_lab = v, c["severity"]
 
         self.attestation = {
-            "tool": "nod", "version": "1.8.0", "policy_version": self.policy_version,
-            "timestamp": datetime.utcnow().isoformat() + "Z", "files_audited": target_files,
-            "aggregate_hash": agg_hash, "max_severity_gap": max_label, "results": results,
-            "remediation_summary": self._generate_agent_prompt(results),
+            "tool": "nod", "version": "1.8.0", "timestamp": datetime.utcnow().isoformat() + "Z",
+            "files_audited": files, "aggregate_hash": agg_hash, 
+            "max_severity_gap": max_lab, "results": results,
+            "remediation_summary": self._gen_prompt(results)
         }
-        self._sign_attestation()
-        return results, max_label
-
-    def _sign_attestation(self):
-        secret = os.environ.get("NOD_SECRET_KEY")
-        if secret:
-            payload = f"{self.attestation['aggregate_hash']}|{self.attestation['timestamp']}|{self.attestation['max_severity_gap']}"
-            self.attestation["signature"] = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        
+        if k := os.environ.get("NOD_SECRET_KEY"):
+            p = f"{agg_hash}|{self.attestation['timestamp']}|{max_lab}"
+            self.attestation["signature"] = hmac.new(k.encode(), p.encode(), hashlib.sha256).hexdigest()
             self.attestation["signed"] = True
         else: self.attestation["signed"] = False
+        
+        return results, max_lab
 
-    def _verify_local_evidence(self, content: str, base_dir: str, default_source: str = None) -> List[Dict[str, Any]]:
-        checks = []
-        for m in re.finditer(r"\[([^\]]+)\]\((?!http)([^)]+)\)", content):
-            path = m.group(2).strip()
-            if path.startswith("#"): continue
-            exists = os.path.exists(os.path.join(base_dir, path))
-            checks.append({
-                "id": f"Evidence: {m.group(1)}", "passed": exists, "status": "PASS" if exists else "FAIL",
-                "severity": "MEDIUM", "type": "evidence", "remediation": f"File not found: {path}",
-                "line": 1, "source": self._resolve_source(content, m.start(), default_source)
-            })
-        return checks
-
-    def _check_req(self, content: str, ext: str, req: Dict, strict: bool) -> Tuple[bool, int, int, str]:
-        # Returns: passed, line, match_start, error_message
-        item_id = req["id"]
-        passed = False
-        line = 1
-        start_idx = -1
-        err = ""
-
+    def _check_req(self, text: str, ext: str, req: Dict, strict: bool) -> Tuple[bool, int, int, str]:
+        rid, passed, line, s_idx, err = req["id"], False, 1, -1, ""
         if ext == ".json":
             try:
-                data = json.loads(content)
-                if item_id in data:
-                    val = str(data[item_id])
+                d = json.loads(text)
+                if rid in d:
+                    val = str(d[rid])
                     if not strict or val.strip():
                         passed = True
                         for p in req.get("must_match", []):
-                            if p.get("pattern") and not re.search(p["pattern"], val, re.IGNORECASE | re.MULTILINE):
-                                passed = False
-                                err = p.get('message', 'Value mismatch')
+                            if p.get("pattern") and not re.search(p["pattern"], val, re.I|re.M):
+                                passed, err = False, p.get('message', 'Value mismatch')
             except: pass
         else:
             try:
-                m = re.search(item_id, content, re.IGNORECASE | re.MULTILINE)
-                if m:
-                    start_idx = m.start()
-                    line = self._get_line_number(content, start_idx)
-                    passed = True
+                if m := re.search(rid, text, re.I|re.M):
+                    s_idx, passed, line = m.start(), True, text.count("\n", 0, m.start()) + 1
+                    ms = m.group(0).strip()
+                    lvl = len(ms) - len(ms.lstrip('#')) if ms.startswith('#') else 0
+                    sect = text[m.end():]
+                    if nxt := re.search(r"^#{1," + str(lvl) + r"}\s" if lvl else r"^#+\s", sect, re.M): sect = sect[:nxt.start()]
                     
-                    match_str, end = m.group(0).strip(), m.end()
-                    lvl = len(match_str) - len(match_str.lstrip('#')) if match_str.startswith('#') else 0
-                    section = content[end:]
-                    next_pat = r"^#{1," + str(lvl) + r"}\s" if lvl > 0 else r"^#+\s"
-                    next_m = re.search(next_pat, section, re.MULTILINE)
-                    if next_m: section = section[:next_m.start()]
-
-                    if strict and len(section.strip()) <= 15: passed = False
-                    
+                    if strict and len(sect.strip()) <= 15: passed = False
                     if passed:
-                        missing = [sub for sub in req.get("must_contain", []) if not re.search(re.escape(sub), section, re.IGNORECASE)]
-                        if missing: passed, err = False, f"Missing: {', '.join(missing)}"
-                    
-                    if passed:
+                        if miss := [s for s in req.get("must_contain", []) if not re.search(re.escape(s), sect, re.I)]:
+                            passed, err = False, f"Missing: {', '.join(miss)}"
                         for p in req.get("must_match", []):
-                            if p.get("pattern") and not re.search(p["pattern"], section, re.IGNORECASE | re.MULTILINE):
-                                passed, err = False, f"{p.get('message', 'Pattern mismatch')}"
+                            if p.get("pattern") and not re.search(p["pattern"], sect, re.I|re.M):
+                                passed, err = False, p.get('message', 'Pattern mismatch')
             except re.error: pass
-        
-        return passed, line, start_idx, err
+        return passed, line, s_idx, err
 
-    def _audit_logic(self, content: str, ext: str, strict: bool, base_dir: str, default_source: str = None, file_map: Dict[str, str] = None) -> Dict[str, Any]:
+    def _audit(self, content: str, ext: str, strict: bool, base: str, def_src: str, fmap: Dict) -> Dict:
         report = {}
-        for profile, p_data in self.config.get("profiles", {}).items():
-            checks, skipped, added_reqs = [], [], []
+        for name, data in self.config.get("profiles", {}).items():
+            checks, skip, added = [], [], []
             
-            # Conditions
-            for cond in p_data.get("conditions", []):
-                if "regex_match" in cond.get("if", {}):
-                    try:
-                        if re.search(cond["if"]["regex_match"], content, re.IGNORECASE | re.MULTILINE):
-                            skipped.extend(cond.get("then", {}).get("skip", []))
-                            for r in cond.get("then", {}).get("require", []):
-                                if isinstance(r, str): added_reqs.append({"id": r, "severity": "HIGH", "remediation": f"Triggered by condition: {cond['if']['regex_match']}"})
-                                elif isinstance(r, dict): added_reqs.append(r)
-                    except re.error: pass
+            # 1. Logic: Conditions (Restore 'require' support)
+            for c in data.get("conditions", []):
+                try: 
+                    if re.search(c["if"]["regex_match"], content, re.I|re.M): 
+                        skip.extend(c["then"].get("skip", []))
+                        for r in c["then"].get("require", []):
+                            if isinstance(r, str): added.append({"id": r, "severity": "HIGH", "remediation": "Conditional Req"})
+                            elif isinstance(r, dict): added.append(r)
+                except re.error as e: print(f"Warning: Regex error in condition: {e}", file=sys.stderr)
 
-            # Requirements
-            for req in p_data.get("requirements", []) + added_reqs:
-                item_id, status, passed, line, source = req["id"], "FAIL", False, 1, default_source
-                remediation = req.get("remediation", "")
-                mode = req.get("mode", "at_least_one")
+            # 2. Logic: Requirements
+            for req in data.get("requirements", []) + added:
+                rid, stat, passed, ln, src = req["id"], "FAIL", False, 1, def_src
+                rem = req.get("remediation", "")
                 
-                if item_id in skipped: status, passed = "SKIPPED", True
-                elif item_id in self.ignored_rules: status, passed = "EXCEPTION", True
+                if rid in skip: stat, passed = "SKIPPED", True
+                elif rid in self.ignored: stat, passed = "EXCEPTION", True
                 else:
-                    if mode == "in_all_files" and file_map:
-                        # Check strictly in EVERY file
-                        missing_files = []
-                        for fpath, fcontent in file_map.items():
-                            fext = os.path.splitext(fpath)[1].lower()
-                            p, _, _, _ = self._check_req(fcontent, fext, req, strict)
-                            if not p: missing_files.append(os.path.basename(fpath))
-                        
-                        if missing_files:
-                            status, passed = "FAIL", False
-                            remediation = f"Missing in {len(missing_files)} files: {', '.join(missing_files)}. " + remediation
-                        else:
-                            status, passed, source = "PASS", True, "all_files"
+                    if req.get("mode") == "in_all_files" and fmap:
+                        miss = [os.path.basename(fp) for fp, txt in fmap.items() if not self._check_req(txt, os.path.splitext(fp)[1], req, strict)[0]]
+                        if miss: stat, rem = "FAIL", f"Missing in: {', '.join(miss)}. " + rem
+                        else: stat, passed, src = "PASS", True, "all_files"
                     else:
-                        # Default: Check aggregate (at least one)
-                        p, l, s_idx, err = self._check_req(content, ext, req, strict)
+                        p, l, idx, e = self._check_req(content, ext, req, strict)
                         if p:
-                            status, passed, line = "PASS", True, l
-                            if not source and s_idx >= 0: source = self._resolve_source(content, s_idx)
-                        if err: remediation = f"{err}. " + remediation
+                            stat, passed, ln = "PASS", True, l
+                            if not src and idx >= 0: src = self._resolve_source(content, idx)
+                        if e: rem = f"{e}. " + rem
 
-                checks.append({
-                    "id": item_id, "passed": passed, "status": status, 
-                    "severity": req.get("severity", "HIGH").upper(),
-                    "remediation": remediation, "tags": req.get("tags", []), "article": req.get("article"),
-                    "control_id": req.get("control_id"), "source": source, "line": line
-                })
+                checks.append({"id": rid, "passed": passed, "status": stat, "severity": req.get("severity", "HIGH"), "remediation": rem, "source": src, "line": ln, "control_id": req.get("control_id"), "article": req.get("article")})
 
-            # Red Flags
-            for flag in p_data.get("red_flags", []):
-                item_id, status, passed, line, source = flag["pattern"], "PASS", True, 1, default_source
+            # 3. Logic: Red Flags
+            for flag in data.get("red_flags", []):
+                rid, stat, passed, ln, src = flag["pattern"], "PASS", True, 1, def_src
                 try:
-                    m = re.search(item_id, content, re.IGNORECASE | re.MULTILINE)
-                    if m:
-                        line = self._get_line_number(content, m.start())
-                        if not source: source = self._resolve_source(content, m.start())
-                        if item_id in self.ignored_rules: status = "EXCEPTION"
-                        elif item_id in skipped: status = "SKIPPED"
-                        else: status, passed = "FAIL", False
+                    if m := re.search(rid, content, re.I|re.M):
+                        ln = content.count("\n", 0, m.start()) + 1
+                        if not src: src = self._resolve_source(content, m.start())
+                        if rid in self.ignored: stat = "EXCEPTION"
+                        elif rid in skip: stat = "SKIPPED"
+                        else: stat, passed = "FAIL", False
                 except re.error: pass
-                checks.append({
-                    "id": item_id, "passed": passed, "status": status, "severity": flag.get("severity", "CRITICAL").upper(),
-                    "type": "red_flag", "remediation": flag.get("remediation"), "tags": flag.get("tags", []),
-                    "article": flag.get("article"), "control_id": flag.get("control_id"), "source": source, "line": line
-                })
+                checks.append({"id": rid, "passed": passed, "status": stat, "severity": flag.get("severity", "CRITICAL"), "type": "red_flag", "remediation": flag.get("remediation"), "source": src, "line": ln, "control_id": flag.get("control_id"), "article": flag.get("article")})
 
-            # Cross-Reference Validation
-            for xref in p_data.get("cross_references", []):
-                src_pat = xref["source"]
-                tgt_tmpl = xref["must_have"]
-                severity = xref.get("severity", "HIGH").upper()
+            # 4. Logic: Cross-Refs
+            for xr in data.get("cross_references", []):
                 try:
-                    for m in re.finditer(src_pat, content, re.IGNORECASE | re.MULTILINE):
-                        expected = m.expand(tgt_tmpl)
-                        passed = expected in content
-                        status = "PASS" if passed else "FAIL"
-                        line = self._get_line_number(content, m.start())
-                        source = self._resolve_source(content, m.start(), default_source)
-                        checks.append({
-                            "id": f"XRef: {m.group(0)} -> {expected}", "passed": passed, "status": status,
-                            "severity": severity, "remediation": f"Found '{m.group(0)}' but missing required '{expected}'",
-                            "tags": ["Integrity", "Traceability"], "source": source, "line": line
-                        })
-                except re.error as e:
-                    print(f"⚠️  Warning: Invalid regex in cross_reference '{src_pat}': {e}", file=sys.stderr)
+                    for m in re.finditer(xr["source"], content, re.I|re.M):
+                        exp, ln = m.expand(xr["must_have"]), content.count("\n", 0, m.start()) + 1
+                        passed = exp in content
+                        checks.append({"id": f"XRef: {m.group(0)}->{exp}", "passed": passed, "status": "PASS" if passed else "FAIL", "severity": xr.get("severity", "HIGH"), "remediation": f"Missing {exp}", "line": ln, "source": self._resolve_source(content, m.start(), def_src)})
+                except re.error: pass
 
-            if strict and ext != ".json" and ("security" in profile or "baseline" in profile):
-                checks.extend(self._verify_local_evidence(content, base_dir, default_source))
+            # 5. Logic: Evidence
+            if strict and ext != ".json" and ("security" in name or "baseline" in name):
+                for m in re.finditer(r"\[([^\]]+)\]\((?!http)([^)]+)\)", content):
+                    path = m.group(2).strip()
+                    if not path.startswith("#"):
+                        exists = os.path.exists(os.path.join(base, path))
+                        checks.append({"id": f"Ev: {m.group(1)}", "passed": exists, "status": "PASS" if exists else "FAIL", "severity": "MEDIUM", "remediation": f"Missing: {path}", "line": 1, "source": self._resolve_source(content, m.start(), def_src)})
 
-            blocking = [c for c in checks if c["status"] == "FAIL" and self.SEVERITY_MAP.get(c["severity"], 0) >= 3]
-            report[profile] = {"label": p_data.get("badge_label", profile), "checks": checks, "passed": len(blocking) == 0}
+            block = [c for c in checks if c["status"] == "FAIL" and self.SEVERITY_MAP.get(c["severity"], 0) >= 3]
+            report[name] = {"label": data.get("badge_label", name), "checks": checks, "passed": not block}
         return report
 
-    def _generate_agent_prompt(self, results: Dict[str, Any]) -> str:
+    def _gen_prompt(self, res: Dict) -> str:
         gaps = []
-        for p in results.values():
+        for p in res.values():
             for c in p.get("checks", []):
                 if c["status"] == "FAIL":
                     ref = c.get("control_id") or c.get("article") or ""
                     gaps.append(f"- [{c['severity']}] {c['id']} {f'[{ref}]' if ref else ''}: {c.get('remediation', '')}")
-        return "\n".join(gaps) if gaps else "No gaps detected."
+        return "\n".join(gaps) if gaps else "No gaps."
 
-    def apply_fix(self, input_path: str, results: Dict[str, Any]):
-        tgt = input_path if os.path.isfile(input_path) else os.path.join(input_path, "nod-compliance.md")
+    def apply_fix(self, path: str, res: Dict):
+        tgt = path if os.path.isfile(path) else os.path.join(path, "nod-compliance.md")
         try:
             with open(tgt, "a", encoding="utf-8") as f:
-                f.write("\n\n<!-- nod: auto-fix appended below -->\n")
+                f.write("\n\n<!-- nod: auto-fix -->\n")
                 cnt = 0
-                for name, data in results.items():
-                    missing = [c for c in data["checks"] if c["status"] == "FAIL" and c.get("type") != "red_flag"]
-                    if not missing: continue
-                    f.write(f"\n## Missing: {data['label']}\n")
-                    for m in missing:
-                        f.write(f"\n### {self._clean_header(m['id'])}\n")
-                        if m.get("control_id"): f.write(f"> Ref: {m['control_id']}\n")
-                        f.write(f"<!-- {m.get('remediation')} -->\nTODO: Add details here.\n")
-                        cnt += 1
-            print(f"✅ patched {tgt}: Appended {cnt} missing sections.")
-        except Exception as e: print(f"Error patching: {e}")
+                for data in res.values():
+                    miss = [c for c in data["checks"] if c["status"] == "FAIL" and c.get("type") != "red_flag" and not c.get("id").startswith("XRef")]
+                    if miss:
+                        f.write(f"\n## Missing: {data['label']}\n")
+                        for m in miss:
+                            f.write(f"\n### {self._clean(m['id'])}\n")
+                            if m.get("control_id"): f.write(f"> Ref: {m['control_id']}\n")
+                            f.write(f"<!-- {m.get('remediation')} -->\nTODO: Details.\n")
+                            cnt += 1
+            print(f"✅ Patched {tgt} (+{cnt})")
+        except Exception as e: print(f"Error: {e}")
 
-    def generate_compliance_report(self) -> str:
-        lines = []
-        for profile, data in self.attestation["results"].items():
-            checks = data.get("checks", [])
-            compliant = len([c for c in checks if c["status"] != "FAIL"])
-            pct = int((compliant / len(checks) * 100) if checks else 0)
-            lines.append(f"{data['label']} Compliance Report\nGenerated: {datetime.utcnow().strftime('%Y-%m-%d')}")
-            lines.append(f"Status: {pct}% Compliant ({compliant}/{len(checks)} requirements)\n")
-            for c in checks:
-                icon = {"FAIL": "❌", "EXCEPTION": "⚪", "SKIPPED": "⏭️"}.get(c["status"], "✅")
-                ref = c.get("article") or c.get("control_id")
-                lines.append(f"{icon} {f'{ref}: ' if ref else ''}{self._clean_header(c['id'])}")
-                if c["status"] == "FAIL": lines.append(f"   Status: MISSING\n   Remediation: {c.get('remediation', '')}")
-                elif c["status"] == "PASS":
-                    if c.get("source") and c["source"] != "unknown": lines.append(f"   Evidence: {c['source']}:{c.get('line')}")
-                else: lines.append(f"   Status: {c['status']}")
-                lines.append("")
-            lines.append("-" * 40 + "\n")
-        return "\n".join(lines)
-
-    def generate_sarif(self, input_path: str) -> Dict[str, Any]:
-        rules, results, r_map = [], [], {}
-        for p_data in self.attestation["results"].values():
-            for c in p_data["checks"]:
+    def gen_sarif(self, path: str) -> Dict:
+        rules, runs, rmap = [], [], {}
+        for data in self.attestation["results"].values():
+            for c in data["checks"]:
                 rid = c["id"]
-                if rid not in r_map:
-                    r_map[rid] = len(rules)
+                if rid not in rmap:
+                    rmap[rid] = len(rules)
                     props = {"severity": c["severity"], "tags": c.get("tags", [])}
                     if c.get("article"): props["article"] = c["article"]
-                    
-                    # Fix: Move control_id to a generic compliance property
                     if c.get("control_id"): props["compliance-ref"] = c["control_id"]
-                    
-                    # Fix: Provide valid numeric score for GitHub security-severity
-                    props["security-severity"] = self.SARIF_SCORE_MAP.get(c["severity"], "1.0")
-                    
+                    if c.get("control_id"): props["security-severity"] = self.SARIF_SCORE_MAP.get(c["severity"], "1.0")
                     rules.append({"id": rid, "name": rid, "shortDescription": {"text": c.get("remediation", rid)}, "properties": props})
                 
-                uri = c.get("source") if c.get("source") and c.get("source") != "unknown" else input_path
                 if c["status"] in ["FAIL", "EXCEPTION"]:
-                    lvl = self.SARIF_LEVEL_MAP.get(c["severity"], "warning") if c["status"] == "FAIL" else "note"
-                    res = {
-                        "ruleId": rid, "ruleIndex": r_map[rid], "level": lvl,
-                        "message": {"text": f"Gap: {c.get('remediation')}" if c["status"] == "FAIL" else "Exception via .nodignore"},
-                        "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": c.get("line", 1)}}}]
-                    }
+                    uri = c.get("source") if c.get("source") and c.get("source") != "unknown" else path
+                    res = {"ruleId": rid, "ruleIndex": rmap[rid], "level": self.SARIF_LEVEL_MAP.get(c["severity"], "note"), "message": {"text": f"Gap: {c.get('remediation')}" if c["status"] == "FAIL" else "Exception"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": c.get("line", 1)}}}]}
                     if c["status"] == "EXCEPTION": res.update({"kind": "review", "suppressions": [{"kind": "external"}]})
-                    results.append(res)
-        return {"version": "2.1.0", "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "runs": [{"tool": {"driver": {"name": "nod", "version": self.attestation["version"], "rules": rules}}, "results": results}]}
+                    runs.append(res)
+        return {"version": "2.1.0", "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "runs": [{"tool": {"driver": {"name": "nod", "version": self.attestation["version"], "rules": rules}}, "results": runs}]}
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="nod: AI Spec Compliance Gatekeeper")
-    parser.add_argument("path", nargs="?", help="The spec file OR directory to audit")
-    parser.add_argument("--rules", action='append', help="Rule sources")
-    parser.add_argument("--init", action="store_true", help="Generate template")
-    parser.add_argument("--fix", action="store_true", help="Auto-append missing sections")
-    parser.add_argument("--export", action="store_true", help="Export context")
-    parser.add_argument("--strict", action="store_true", help="Ensure fields are not empty")
-    parser.add_argument("--min-severity", default="HIGH", choices=["MEDIUM", "HIGH", "CRITICAL"])
-    parser.add_argument("--output", choices=["text", "json", "sarif", "compliance"], default="text")
-    args = parser.parse_args()
+    def gen_report(self) -> str:
+        out = []
+        for data in self.attestation["results"].values():
+            chks = data.get("checks", [])
+            pct = int((len([c for c in chks if c["status"] != "FAIL"]) / len(chks) * 100) if chks else 0)
+            out.append(f"{data['label']} Report ({datetime.utcnow().strftime('%Y-%m-%d')})\nStatus: {pct}% Compliant\n")
+            for c in chks:
+                icon = {"FAIL": "❌", "EXCEPTION": "⚪", "SKIPPED": "⏭️"}.get(c["status"], "✅")
+                ref = c.get("article") or c.get("control_id")
+                out.append(f"{icon} {f'{ref}: ' if ref else ''}{self._clean(c['id'])}")
+                if c["status"] == "FAIL": out.append(f"   MISSING: {c.get('remediation','')}")
+                elif c["status"] == "PASS" and c.get("source") and c["source"] != "unknown": out.append(f"   Ev: {c['source']}:{c.get('line')}")
+                out.append("")
+            out.append("-" * 40)
+        return "\n".join(out)
 
-    defaults = ["defaults"] if os.path.isdir("defaults") else ["rules.yaml"]
-    scanner = Nod(args.rules if args.rules else defaults)
+def main():
+    p = argparse.ArgumentParser(description="nod: AI Spec Compliance")
+    p.add_argument("path", nargs="?", help="File/Dir to audit")
+    p.add_argument("--rules", action='append')
+    p.add_argument("--init", action="store_true")
+    p.add_argument("--fix", action="store_true")
+    p.add_argument("--export", action="store_true")
+    p.add_argument("--strict", action="store_true")
+    p.add_argument("--min-severity", default="HIGH", choices=["MEDIUM", "HIGH", "CRITICAL"])
+    p.add_argument("--output", choices=["text", "json", "sarif", "compliance"], default="text")
+    p.add_argument("--save-to")
+    a = p.parse_args()
 
-    if args.export: print(scanner.generate_system_context()); sys.exit(0)
-    if args.init:
-        t = scanner.generate_template()
-        if args.path:
-            if os.path.exists(args.path) and os.path.isfile(args.path): print(f"Error: {args.path} exists."); sys.exit(1)
-            with open(args.path, "w", encoding="utf-8") as f: f.write(t)
-            print(f"✅ Generated: {args.path}")
+    defs = ["defaults"] if os.path.isdir("defaults") else ["rules.yaml"]
+    scan = Nod(a.rules if a.rules else defs)
+
+    if a.export: print(scan.gen_context()); sys.exit(0)
+    if a.init:
+        t = scan.gen_template()
+        if a.path:
+            if os.path.exists(a.path): print("Error: File exists"); sys.exit(1)
+            with open(a.path, "w", encoding="utf-8") as f: f.write(t)
+            print(f"✅ Generated: {a.path}")
         else: print(t)
         sys.exit(0)
 
-    if not args.path: parser.print_help(); sys.exit(1)
-    results, max_sev = scanner.scan_input(args.path, strict=args.strict)
-    if args.fix: scanner.apply_fix(args.path, results); sys.exit(0)
+    if not a.path: p.print_help(); sys.exit(1)
+    res, sev = scan.scan_input(a.path, strict=a.strict)
+    if a.fix: scan.apply_fix(a.path, res); sys.exit(0)
 
-    if args.output == "sarif": print(json.dumps(scanner.generate_sarif(args.path), indent=2))
-    elif args.output == "json": print(json.dumps(scanner.attestation, indent=2))
-    elif args.output == "compliance":
-        print(scanner.generate_compliance_report())
-        sys.exit(0 if scanner.SEVERITY_MAP.get(max_sev, 0) < scanner.SEVERITY_MAP.get(args.min_severity) else 1)
+    out, code = "", 0
+    if a.output == "sarif": out = json.dumps(scan.gen_sarif(a.path), indent=2)
+    elif a.output == "json": out = json.dumps(scan.attestation, indent=2)
+    elif a.output == "compliance": out = scan.gen_report()
     else:
-        print(f"\n--- nod Audit Summary ---\nTarget: {args.path}\nMax Severity Gap: {max_sev}")
-        if scanner.attestation.get("signed"): print(f"🔒 Signature: VERIFIED (HMAC-SHA256)")
-        failed, min_val = False, scanner.SEVERITY_MAP.get(args.min_severity)
-        for p in results.values():
-            print(f"\n[{p['label']}]")
-            for c in p["checks"]:
+        summ = [f"\n--- nod Summary ---\nTarget: {a.path}\nMax Sev: {sev}"]
+        if scan.attestation.get("signed"): summ.append("🔒 Signed")
+        fail, min_v = False, scan.SEVERITY_MAP.get(a.min_severity)
+        for d in res.values():
+            summ.append(f"\n[{d['label']}]")
+            for c in d["checks"]:
                 if c["status"] == "FAIL":
-                    print(f"  ❌ [{c['severity']}] {c['id']}")
-                    if c.get("source"): print(f"     File: {c['source']}")
-                    if c.get("control_id"): print(f"     Ref: {c['control_id']}")
-                    if scanner.SEVERITY_MAP.get(c["severity"], 0) >= min_val: failed = True
-                elif c["status"] == "EXCEPTION": print(f"  ⚪ [EXCEPTION] {c['id']}")
-                elif c["status"] == "SKIPPED": print(f"  ⏭️  [SKIPPED] {c['id']}")
-                else: print(f"  ✅ [PASS] {c['id']}")
+                    summ.append(f"  ❌ [{c['severity']}] {c['id']}")
+                    if c.get("source"): summ.append(f"     File: {c['source']}")
+                    if scan.SEVERITY_MAP.get(c["severity"], 0) >= min_v: fail = True
+                elif c["status"] == "EXCEPTION": summ.append(f"  ⚪ [EXCEPTION] {c['id']}")
+                elif c["status"] == "SKIPPED": summ.append(f"  ⏭️  [SKIPPED] {c['id']}")
+                else: summ.append(f"  ✅ [PASS] {c['id']}")
+        summ.append(f"\nFAIL: Blocked by {a.min_severity}+" if fail else "\nPASS: Nod granted.")
+        out = "\n".join(summ)
+        if fail: code = 1
         
-        if failed: print(f"\nFAIL: Blocked by {args.min_severity}+ gaps."); sys.exit(1)
-        print("\nPASS: Nod granted."); sys.exit(0)
+    if scan.SEVERITY_MAP.get(sev, 0) >= scan.SEVERITY_MAP.get(a.min_severity): code = 1
 
-if __name__ == "__main__":
-    main()
+    if a.save_to:
+        try: open(a.save_to, "w", encoding="utf-8").write(out); print(f"Saved: {a.save_to}")
+        except Exception as e: print(f"Error: {e}"); sys.exit(1)
+    else: print(out)
+    sys.exit(code)
+
+if __name__ == "__main__": main()
