@@ -31,6 +31,11 @@ jobs:
         with:
           sarif_file: nod-results.sarif
 
+      - name: Generate JSON Attestation
+        if: always()
+        run: |
+          python nod.py ai-spec.md --output json > nod-attestation.json || true
+
       - name: Gatekeeper Check
         id: nod_gate
         # Now fail the build if criteria aren't met
