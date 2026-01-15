@@ -10,9 +10,9 @@ inputs:
     description: 'Path to the spec file to audit (e.g., ai-spec.md)'
     required: true
   rules:
-    description: 'Path or URL to rules.yaml'
+    description: 'Path to rules file or directory. Defaults to "defaults/" or "rules.yaml".'
     required: false
-    default: 'rules.yaml'
+    default: ''
   strict:
     description: 'Enable strict mode (checks content length)'
     required: false
@@ -25,6 +25,10 @@ inputs:
     description: 'Output format (text, json, sarif)'
     required: false
     default: 'text'
+  output_file:
+    description: 'File path to save the output (e.g. nod-results.sarif)'
+    required: false
+    default: ''
 
 runs:
   using: "composite"
@@ -40,9 +44,24 @@ runs:
 
     - name: Run nod
       run: |
+        RULES="${{ inputs.rules }}"
+        if [ -z "$RULES" ]; then
+          if [ -d "${{ github.action_path }}/defaults" ]; then
+            RULES="${{ github.action_path }}/defaults"
+          elif [ -f "${{ github.action_path }}/rules.yaml" ]; then
+            RULES="${{ github.action_path }}/rules.yaml"
+          fi
+        fi
+
+        SAVE_ARG=""
+        if [ -n "${{ inputs.output_file }}" ]; then
+          SAVE_ARG="--save-to ${{ inputs.output_file }}"
+        fi
+
         python ${{ github.action_path }}/nod.py ${{ inputs.target }} \
-          --rules ${{ inputs.rules }} \
+          --rules "$RULES" \
           --min-severity ${{ inputs.min_severity }} \
           --output ${{ inputs.output_format }} \
-          ${{ inputs.strict == 'true' && '--strict' || '' }}
+          ${{ inputs.strict == 'true' && '--strict' || '' }} \
+          $SAVE_ARG
       shell: bash
