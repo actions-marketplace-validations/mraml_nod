@@ -35,6 +35,12 @@ class Nod:
         "LOW": "note", "INFO": "note"
     }
 
+    # Maps nod severity to CVSS-style scores (0.0-10.0) for GitHub Code Scanning
+    SARIF_SCORE_MAP: Dict[str, str] = {
+        "CRITICAL": "9.0", "HIGH": "7.0", "MEDIUM": "5.0",
+        "LOW": "3.0", "INFO": "1.0"
+    }
+
     DEFAULT_TIMEOUT = 15.0
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
     MAX_TOTAL_SIZE = 20 * 1024 * 1024  # 20MB
@@ -411,7 +417,13 @@ class Nod:
                     r_map[rid] = len(rules)
                     props = {"severity": c["severity"], "tags": c.get("tags", [])}
                     if c.get("article"): props["article"] = c["article"]
-                    if c.get("control_id"): props["security-severity"] = c["control_id"]
+                    
+                    # Fix: Move control_id to a generic compliance property
+                    if c.get("control_id"): props["compliance-ref"] = c["control_id"]
+                    
+                    # Fix: Provide valid numeric score for GitHub security-severity
+                    props["security-severity"] = self.SARIF_SCORE_MAP.get(c["severity"], "1.0")
+                    
                     rules.append({"id": rid, "name": rid, "shortDescription": {"text": c.get("remediation", rid)}, "properties": props})
                 
                 uri = c.get("source") if c.get("source") and c.get("source") != "unknown" else input_path
