@@ -10,6 +10,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 import yaml
 
+class Colors:
+    RESET = '\033[0m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+
 class Nod:
     SEVERITY_MAP = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
     
@@ -116,19 +125,13 @@ class Nod:
             lines.append("")
         return "\n".join(lines)
 
-    def _collect_files(self, path: str) -> List[str]:
-        if os.path.isfile(path): return [path]
-        found = []
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith('.')] # Filter hidden dirs
-            for f in files:
-                # Added .mdx to supported extensions
-                if os.path.splitext(f)[1].lower() in {'.md', '.markdown', '.mdx', '.json', '.txt'}:
-                    found.append(os.path.join(root, f))
-        return found
-
     def scan_input(self, path: str, strict: bool = False) -> Tuple[Dict, str]:
-        files = self._collect_files(path)
+        files = []
+        if os.path.isfile(path): files = [path]
+        else:
+            for root, dirs, fs in os.walk(path):
+                dirs[:] = [d for d in dirs if not d.startswith('.')] # Filter hidden dirs
+                files += [os.path.join(root, f) for f in fs if os.path.splitext(f)[1].lower() in {'.md', '.json', '.txt'}]
         
         if not files: return {"error": f"No files in {path}"}, "NONE"
         
@@ -213,7 +216,6 @@ class Nod:
                     if re.search(c["if"]["regex_match"], content, re.I|re.M): 
                         skip.extend(c["then"].get("skip", []))
                         for r in c["then"].get("require", []):
-                            # Append dynamic requirements if needed
                             pass 
                 except re.error as e: print(f"Warning: Regex error in condition: {e}", file=sys.stderr)
 
@@ -259,7 +261,6 @@ class Nod:
                     "source": src, "line": ln, "control_id": flag.get("control_id"), "article": flag.get("article")
                 })
 
-            # Cross-Refs
             for xr in data.get("cross_references", []):
                 try:
                     for m in re.finditer(xr["source"], content, re.I|re.M):
@@ -390,21 +391,28 @@ def main():
     elif a.output == "json": out = json.dumps(scan.attestation, indent=2)
     elif a.output == "compliance": out = scan.gen_report()
     else:
+        # Determine usage of color
+        use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+        def c(text, color): return f"{color}{text}{Colors.RESET}" if use_color else text
+
         summ = [f"\n--- nod Summary ---\nTarget: {a.path}\nMax Sev: {sev}"]
-        if scan.attestation.get("signed"): summ.append("🔒 Signed")
+        if scan.attestation.get("signed"): summ.append(f"{c('🔒 Signed', Colors.GREEN)}")
         fail, min_v = False, scan.SEVERITY_MAP.get(a.min_severity)
         for d in res.values():
-            summ.append(f"\n[{d['label']}]")
-            for c in d["checks"]:
-                name = c.get("label") or c['id']
-                if c["status"] == "FAIL":
-                    summ.append(f"  ❌ [{c['severity']}] {name}")
-                    if c.get("source"): summ.append(f"     File: {c['source']}")
-                    if scan.SEVERITY_MAP.get(c["severity"], 0) >= min_v: fail = True
-                elif c["status"] == "EXCEPTION": summ.append(f"  ⚪ [EXCEPTION] {name}")
-                elif c["status"] == "SKIPPED": summ.append(f"  ⏭️  [SKIPPED] {name}")
-                else: summ.append(f"  ✅ [PASS] {name}")
-        summ.append(f"\nFAIL: Blocked by {a.min_severity}+" if fail else "\nPASS: Nod granted.")
+            summ.append(f"\n[{c(d['label'], Colors.BOLD)}]")
+            for x in d["checks"]:
+                name = x.get("label") or x['id']
+                if x["status"] == "FAIL":
+                    sev_col = Colors.RED if x['severity'] in ["CRITICAL", "HIGH"] else Colors.YELLOW
+                    summ.append(f"  {c('❌', Colors.RED)} [{c(x['severity'], sev_col)}] {name}")
+                    if x.get("source"): summ.append(f"     File: {x['source']}")
+                    if scan.SEVERITY_MAP.get(x["severity"], 0) >= min_v: fail = True
+                elif x["status"] == "EXCEPTION": summ.append(f"  {c('⚪', Colors.BLUE)} [EXCEPTION] {name}")
+                elif x["status"] == "SKIPPED": summ.append(f"  {c('⏭️', Colors.CYAN)}  [SKIPPED] {name}")
+                else: summ.append(f"  {c('✅', Colors.GREEN)} [PASS] {name}")
+        
+        status_msg = f"\nFAIL: Blocked by {a.min_severity}+" if fail else "\nPASS: Nod granted."
+        summ.append(c(status_msg, Colors.RED if fail else Colors.GREEN))
         out = "\n".join(summ)
         if fail: code = 1
         
