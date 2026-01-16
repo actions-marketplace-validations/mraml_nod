@@ -132,6 +132,10 @@ class Nod:
                 pass
         return []
 
+    def _get_line_number(self, content: str, index: int) -> int:
+        """Calculates line number from character index."""
+        return content.count("\n", 0, index) + 1
+
     def _clean_header(self, text: str) -> str:
         """Normalizes regex patterns into readable headers."""
         text = re.sub(r"[#+*?^$\[\](){}|]", "", text).strip()
@@ -577,9 +581,9 @@ class Nod:
         rmap = {}
         for data in self.attestation["results"].values():
             for c in data["checks"]:
-                rid = c["id"]
-                if rid not in rmap:
-                    rmap[rid] = len(rules)
+                rule_id = c["id"]
+                if rule_id not in rmap:
+                    rmap[rule_id] = len(rules)
                     props = {"severity": c["severity"]}
                     if c.get("article"):
                         props["article"] = c["article"]
@@ -587,9 +591,9 @@ class Nod:
                         props["compliance-ref"] = c["control_id"]
                         props["security-severity"] = self.SARIF_SCORE_MAP.get(c["severity"], "1.0")
                     
-                    desc = c.get("label") or rid
+                    desc = c.get("label") or rule_id
                     rules.append({
-                        "id": rid,
+                        "id": rule_id,
                         "name": desc,
                         "shortDescription": {"text": c.get("remediation", desc)},
                         "properties": props
@@ -601,8 +605,8 @@ class Nod:
                     msg = f"Gap: {c.get('remediation')}" if c["status"] == "FAIL" else "Exception via .nodignore"
                     
                     result = {
-                        "ruleId": rid,
-                        "ruleIndex": rmap[rid],
+                        "ruleId": rule_id,
+                        "ruleIndex": rmap[rule_id],
                         "level": level,
                         "message": {"text": msg},
                         "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": c.get("line", 1)}}}]
