@@ -161,26 +161,41 @@ class Nod:
                 lines.append("TODO: Add details...\n")
         return "\n".join(lines)
 
-    def gen_context(self) -> str:
-        """Generates a System Prompt context for AI agents."""
-        lines = ["# SYSTEM COMPLIANCE CONSTRAINTS", f"POLICY: {self.policy_version}", "MANDATORY CONSTRAINTS:\n"]
+    def gen_context(self, fmt: str = "context") -> str:
+        """
+        Generates a System Prompt context for AI agents.
+        Supports standard context, cursor rules, and windsurf rules.
+        """
+        lines = []
+        if fmt == "cursor":
+            lines.append("You are an AI programming assistant. You must adhere to the following compliance constraints when generating code or specifications.\n")
+        elif fmt == "windsurf":
+            lines.append("You are Cascade. Follow these mandatory compliance rules in all generation tasks.\n")
+
+        lines += ["# SYSTEM COMPLIANCE CONSTRAINTS", f"POLICY: {self.policy_version}", "MANDATORY CONSTRAINTS:\n"]
+        
         for name, data in self.config.get("profiles", {}).items():
             reqs = [r for r in data.get("requirements", []) if r["id"] not in self.ignored]
             flags = [f for f in data.get("red_flags", []) if f["pattern"] not in self.ignored]
+            
             if not reqs and not flags:
                 continue
+                
             lines.append(f"## {data.get('badge_label', name)}")
+            
             if reqs:
                 lines.append("### REQUIRE:")
                 for r in reqs:
                     name = r.get("label") or self._clean_header(r['id'])
                     lines.append(f"- {name}: {r.get('remediation','')}")
+            
             if flags:
                 lines.append("### FORBID:")
                 for f in flags:
                     name = f.get("label") or f"PATTERN '{f['pattern']}'"
                     lines.append(f"- {name}: {f.get('remediation','')}")
             lines.append("")
+            
         return "\n".join(lines)
 
     def _collect_files(self, path: str) -> List[str]:
@@ -379,19 +394,23 @@ class Nod:
         """Main audit loop handling conditions, requirements, and red flags."""
         report = {}
         for name, data in self.config.get("profiles", {}).items():
-            checks, skip = [], []
+            checks, skip, added_reqs = [], [], []
             
             # 1. Conditions
             for c in data.get("conditions", []):
                 try:
                     if re.search(c["if"]["regex_match"], content, re.I | re.M):
                         skip.extend(c["then"].get("skip", []))
-                        # Note: 'require' injection logic can be expanded here if needed
+                        for r in c["then"].get("require", []):
+                            if isinstance(r, str):
+                                added_reqs.append({"id": r, "severity": "HIGH", "remediation": "Conditional Req"})
+                            elif isinstance(r, dict):
+                                added_reqs.append(r)
                 except re.error as e:
                     print(f"Warning: Regex error in condition: {e}", file=sys.stderr)
 
             # 2. Requirements
-            for req in data.get("requirements", []):
+            for req in data.get("requirements", []) + added_reqs:
                 rule_id = req["id"]
                 status = "FAIL"
                 passed = False
@@ -518,6 +537,7 @@ class Nod:
         return report
 
     def _gen_prompt(self, res: Dict[str, Any]) -> str:
+        """Generates a summary string for AI agents to fix gaps."""
         gaps = []
         for p in res.values():
             for c in p.get("checks", []):
@@ -529,11 +549,12 @@ class Nod:
         return "\n".join(gaps) if gaps else "No gaps."
 
     def apply_fix(self, path: str, res: Dict[str, Any]) -> None:
+        """Appends missing sections to the target file."""
         tgt = path if os.path.isfile(path) else os.path.join(path, "nod-compliance.md")
         try:
             with open(tgt, "a", encoding="utf-8") as f:
                 f.write("\n\n<!-- nod: auto-fix -->\n")
-                count = 0
+                cnt = 0
                 for data in res.values():
                     miss = [c for c in data["checks"] if c["status"] == "FAIL" and c.get("type") != "red_flag" and not c.get("id").startswith("XRef")]
                     if miss:
@@ -544,20 +565,21 @@ class Nod:
                             if m.get("control_id"):
                                 f.write(f"> Ref: {m['control_id']}\n")
                             f.write(f"<!-- {m.get('remediation')} -->\nTODO: Details.\n")
-                            count += 1
-            print(f"✅ Patched {tgt} (+{count})")
+                            cnt += 1
+            print(f"✅ Patched {tgt} (+{cnt})")
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
 
     def gen_sarif(self, path: str) -> Dict[str, Any]:
+        """Generates SARIF JSON output for security dashboards."""
         rules = []
         runs = []
         rmap = {}
         for data in self.attestation["results"].values():
             for c in data["checks"]:
-                rule_id = c["id"]
-                if rule_id not in rmap:
-                    rmap[rule_id] = len(rules)
+                rid = c["id"]
+                if rid not in rmap:
+                    rmap[rid] = len(rules)
                     props = {"severity": c["severity"]}
                     if c.get("article"):
                         props["article"] = c["article"]
@@ -565,9 +587,9 @@ class Nod:
                         props["compliance-ref"] = c["control_id"]
                         props["security-severity"] = self.SARIF_SCORE_MAP.get(c["severity"], "1.0")
                     
-                    desc = c.get("label") or rule_id
+                    desc = c.get("label") or rid
                     rules.append({
-                        "id": rule_id,
+                        "id": rid,
                         "name": desc,
                         "shortDescription": {"text": c.get("remediation", desc)},
                         "properties": props
@@ -579,8 +601,8 @@ class Nod:
                     msg = f"Gap: {c.get('remediation')}" if c["status"] == "FAIL" else "Exception via .nodignore"
                     
                     result = {
-                        "ruleId": rule_id,
-                        "ruleIndex": rmap[rule_id],
+                        "ruleId": rid,
+                        "ruleIndex": rmap[rid],
                         "level": level,
                         "message": {"text": msg},
                         "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": c.get("line", 1)}}}]
@@ -605,15 +627,13 @@ class Nod:
         }
 
     def gen_report(self) -> str:
+        """Generates a human-readable text report."""
         out = []
         for data in self.attestation["results"].values():
-            checks = data.get("checks", [])
-            compliant = len([c for c in checks if c["status"] != "FAIL"])
-            total = len(checks)
-            pct = int((compliant / total * 100) if total else 0)
-            
+            chks = data.get("checks", [])
+            pct = int((len([c for c in chks if c["status"] != "FAIL"]) / len(chks) * 100) if chks else 0)
             out.append(f"{data['label']} Report ({datetime.utcnow().strftime('%Y-%m-%d')})\nStatus: {pct}% Compliant\n")
-            for c in checks:
+            for c in chks:
                 icon = {"FAIL": "❌", "EXCEPTION": "⚪", "SKIPPED": "⏭️"}.get(c["status"], "✅")
                 ref = c.get("article") or c.get("control_id")
                 name = c.get("label") or self._clean_header(c['id'])
@@ -634,7 +654,7 @@ def main():
     parser.add_argument("--rules", action='append')
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--fix", action="store_true")
-    parser.add_argument("--export", action="store_true")
+    parser.add_argument("--export", nargs="?", const="context", choices=["context", "cursor", "windsurf"], help="Export context/rules")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--freeze", action="store_true")
     parser.add_argument("--verify", action="store_true")
@@ -644,10 +664,11 @@ def main():
     args = parser.parse_args()
 
     default_rules = ["defaults"] if os.path.isdir("defaults") else ["rules.yaml"]
-    scanner = Nod(args.rules if args.rules else default_rules)
+    sources = args.rules if args.rules else default_rules
+    scanner = Nod(sources)
 
     if args.export:
-        print(scanner.gen_context())
+        print(scanner.gen_context(args.export))
         sys.exit(0)
         
     if args.init:
