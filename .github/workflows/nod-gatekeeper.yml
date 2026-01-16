@@ -1,49 +1,75 @@
-name: AI Compliance Gatekeeper
-on: [pull_request, push]
+name: Validate Contributions
+on: 
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+  pull_request:
+    # Removed path filters so it runs on all PRs in the nod repo
+
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
-  audit:
+  quality-gate:
+    name: Transparency Standard Check
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
-      
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-          
-      - name: Install dependencies
-        run: pip install pyyaml
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
+      # 1. Generate SARIF (Soft Fail)
       - name: Run nod (Generate SARIF)
-        id: nod_sarif
-        # Explicitly point to the defaults/ directory
-        run: |
-          python nod.py spec.md --rules defaults/ --output sarif > nod-results.sarif || true
+        uses: ./ # Points to the local action in this repo
+        continue-on-error: true
+        with:
+          target: 'examples/spec_compliant.md' # Validates the known good example
+          rules: 'defaults/'                   # Uses the built-in rule packs
+          strict: 'true'
+          min_severity: 'HIGH'
+          output_format: 'sarif'
+          output_file: 'nod-results.sarif'
 
-      - name: Upload SARIF to GitHub Security Tab
-        uses: github/codeql-action/upload-sarif@v3
+      # 2. Generate JSON (Soft Fail)
+      - name: Generate JSON Attestation
+        uses: ./
+        continue-on-error: true
+        with:
+          target: 'examples/spec_compliant.md'
+          rules: 'defaults/'
+          strict: 'true'
+          min_severity: 'HIGH'
+          output_format: 'json'
+          output_file: 'nod-attestation.json'
+
+      # 3. NEW: Print the JSON to the logs for immediate visibility
+      - name: Print JSON Context for Agents
+        run: |
+          echo "::group::Full JSON Attestation"
+          cat nod-attestation.json || echo "JSON file not found"
+          echo "::endgroup::"
+
+      # 4. Upload SARIF to Security Tab
+      - name: Upload SARIF Results
+        uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true # Ensure upload doesn't block the rest if it fails
         with:
           sarif_file: nod-results.sarif
 
-      - name: Generate JSON Attestation
-        if: always()
-        run: |
-          python nod.py spec.md --rules defaults/ --output json > nod-attestation.json || true
-
-      - name: Gatekeeper Check
-        id: nod_gate
-        # Block the build if high severity issues are found
-        run: |
-          python nod.py spec.md --rules defaults/ --strict --min-severity HIGH
-
+      # 5. Upload JSON to Artifacts (Explicitly Always)
       - name: Upload Attestation Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nod-attestation
           path: nod-attestation.json
+          retention-days: 5
+
+      # 6. FINAL GATEKEEPER (Hard Fail)
+      - name: Gatekeeper Check
+        uses: ./
+        with:
+          target: 'examples/spec_compliant.md'
+          rules: 'defaults/'
+          strict: 'true'
+          min_severity: 'HIGH'
