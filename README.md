@@ -26,7 +26,12 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 * **Scaffolding (`--init`):** Instantly generate a compliant Markdown template based on active rules.  
 * **Auto-Fix (`--fix`):** Automatically append missing headers and compliance boilerplate.  
 * **Agent Context (`--export`):** Export rules as a "System Prompt" to constrain AI agents.  
-* **Integrity Signing:** Cryptographically sign artifacts using HMAC-SHA256.
+  * Supports `.cursorrules` and `.windsurfrules`.  
+* **Integrity Signing:** Cryptographically sign artifacts using HMAC-SHA256.  
+* **Gap Severity Model:** Categorizes issues as **CRITICAL**, **HIGH**, **MEDIUM**, or **LOW**.  
+* **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards.  
+* **Exception Management:** Formalize risk acceptance using a `.nodignore` file.  
+* **Remote Rule Registry:** Securely fetch industry-standard rules via HTTPS with strict SSL verification.
 
 ## **⚠️ Important Disclaimer**
 
@@ -62,6 +67,9 @@ If you are using an AI Agent (like Ralph, Claude, or GPT) to write your spec or 
 ```
 # Export rules as a System Prompt constraint block
 python nod.py --export --rules rules.yaml
+
+# Generate Cursor/Windsurf rules
+python nod.py --export cursor
 ```
 
 ### **3\. Audit: The Gatekeeper**
@@ -92,6 +100,18 @@ To verify that an audit result hasn't been tampered with, set the `NOD_SECRET_KE
 export NOD_SECRET_KEY="my-secret-ci-key"
 python nod.py ai-spec.md --output json
 # Output includes "signature": "a1b2c3..."
+```
+
+### **6\. Baseline: Freeze & Verify**
+
+Lock your compliance state to detect drift.
+
+```
+# Freeze current state to nod.lock
+python nod.py docs/ --freeze
+
+# Verify current state against lockfile (CI/CD)
+python nod.py docs/ --verify
 ```
 
 ## **🧠 Advanced Rule Logic**
@@ -195,7 +215,6 @@ Add this to your `README.md` to show if your specs are currently passing the gat
 ## **🛡️ License**
 
 Apache 2.0
-
 
 
 
