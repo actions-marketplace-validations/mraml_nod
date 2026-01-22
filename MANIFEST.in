@@ -1,0 +1,3 @@
+include src/nod/defaults/*.yaml
+include README.md
+include LICENSE
