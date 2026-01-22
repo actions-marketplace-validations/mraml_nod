@@ -1,6 +1,7 @@
 import re
 import sys
 import os
+import fnmatch
 
 class Colors:
     """ANSI color codes for terminal output."""
@@ -36,3 +37,20 @@ def resolve_source(content: str, index: int) -> str:
         else:
             break
     return best_source
+
+def should_ignore(path: str, ignore_patterns: list) -> bool:
+    """Checks if a file path matches any ignore pattern (using fnmatch)."""
+    # Always ignore common junk folders
+    DEFAULT_IGNORES = {'node_modules', 'venv', '.venv', '__pycache__', '.git', 'dist', 'build', 'coverage'}
+    
+    parts = path.split(os.sep)
+    if any(p in DEFAULT_IGNORES for p in parts):
+        return True
+        
+    name = os.path.basename(path)
+    for pattern in ignore_patterns:
+        # Check if the pattern is a fileglob (e.g. *.log or tests/)
+        if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(path, pattern):
+            return True
+            
+    return False
