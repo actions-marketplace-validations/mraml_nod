@@ -32,6 +32,7 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 * **SARIF Output:** Native integration with GitHub Advanced Security and GitLab Security Dashboards.  
 * **Exception Management:** Formalize risk acceptance using a `.nodignore` file.  
 * **Remote Rule Registry:** Securely fetch industry-standard rules via HTTPS with strict SSL verification.
+* **Community Rules Library:** https://github.com/mraml/nod-rules
 
 ## **⚠️ Important Disclaimer**
 
@@ -39,13 +40,7 @@ Automated agents and agentic workflows (like Ralph, AutoGPT, or custom CI/CD bui
 
 ## **🛠️ Installation**
 
-**nod** can be installed as a Python package or used via GitHub Actions.
-
-**Local Installation:**
-
-```
-pip install git+[https://github.com/mraml/nod.git@v2.0.0](https://github.com/mraml/nod.git@v2.0.0)
-```
+**nod** can be used via GitHub Actions.
 
 ## **📖 Usage Lifecycle**
 
