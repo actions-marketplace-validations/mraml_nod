@@ -191,7 +191,7 @@ jobs:
 
 ## **🤝 Contributing**
 
-We welcome contributions\! Please see [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for details on how to add new rules or features.
+We welcome contributions\! Please see [CONTRIBUTING.md](https://github.com/mraml/nod/blob/main/CONTRIBUTING.md) for details on how to add new rules or features.
 
 If you find **nod** useful for your organization, please consider **starring the repository** to help others find it.
 
